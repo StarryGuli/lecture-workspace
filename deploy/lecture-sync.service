@@ -1,0 +1,29 @@
+[Unit]
+Description=Lecture Workspace sync store (encrypted blobs only; no app, no model calls)
+After=network.target
+
+[Service]
+User=lecture-sync
+Group=lecture-sync
+Environment=LECTURE_SYNC_HOST=127.0.0.1
+Environment=LECTURE_SYNC_PORT=8791
+Environment=LECTURE_SYNC_STORE=/var/lib/lecture-sync
+ExecStart=/usr/bin/python3 /opt/lecture-sync/sync_server.py
+Restart=on-failure
+RestartSec=3
+
+# 加固：只能写自己的数据目录；除本机回环外一切网络流量都被系统层拒绝，
+# 所以即使代码被改坏，这个服务也发不出模型请求或把数据传到别处。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/lecture-sync
+IPAddressAllow=127.0.0.0/8 ::1
+IPAddressDeny=any
+MemoryMax=96M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

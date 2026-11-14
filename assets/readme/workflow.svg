@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+<title id="title">Lecture Workspace 录音处理流程</title><desc id="desc">持续录音先保存在设备，再按自然停顿发给识别模型，校订后用于记录、逐字稿和听课辅助。</desc>
+<rect width="1200" height="340" rx="24" fill="#f7f6fb"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif">
+<text x="48" y="62" font-size="28" font-weight="700" fill="#252336">先留下声音，再理解内容</text>
+<text x="48" y="99" font-size="20" fill="#666177">设备保存 · 自然分段 · 原文可核对</text>
+<path d="M265 179H335M535 179H605M805 179H875" stroke="#8676ce" stroke-width="3"/>
+<path d="m325 172 10 7-10 7m270-14 10 7-10 7m270-14 10 7-10 7" fill="none" stroke="#8676ce" stroke-width="3"/>
+<g fill="#fff" stroke="#ded9ee"><rect x="48" y="135" width="217" height="88" rx="14"/><rect x="335" y="135" width="200" height="88" rx="14"/><rect x="605" y="135" width="200" height="88" rx="14"/><rect x="875" y="135" width="277" height="88" rx="14"/></g>
+<g font-size="24" font-weight="600" fill="#40335f" text-anchor="middle"><text x="156" y="187">录音 / 本地保存</text><text x="435" y="187">停顿分段</text><text x="705" y="187">识别与校订</text><text x="1013" y="187">记录 · 逐字稿 · 辅助</text></g>
+<text x="48" y="282" font-size="20" fill="#666177">原音留在录制设备；模型按选定接入方式接收所需片段与文本。</text>
+</g></svg>

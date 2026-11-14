@@ -1,0 +1,28 @@
+.mobile-device-bar{padding:8px max(20px,env(safe-area-inset-left));display:flex;align-items:center;gap:10px 20px;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:11px}.mobile-device-bar>div{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}.mobile-device-bar button{padding:4px 9px;min-height:30px;font-size:11px}.mobile-device-bar>small{flex-basis:100%;overflow-wrap:anywhere}.mobile-device-bar>small:empty{display:none}.mobile-connect-dialog{max-width:620px;width:calc(100% - 28px);max-height:85dvh;overflow:auto;padding:22px}.mobile-connect-dialog p{font-size:13px;line-height:1.8;color:var(--muted)}.mobile-connect-dialog section{padding:18px 0;border-top:1px solid var(--line)}.mobile-connect-dialog label{display:block;margin:12px 0;font-size:13px}.mobile-connect-dialog input{display:block;width:100%;margin-top:7px;font-size:16px}.mobile-connect-dialog button{margin:4px 8px 4px 0}.mobile-connect-dialog code{overflow-wrap:anywhere}.mobile-connect-dialog h3{font-size:15px}@media(max-width:600px){.mobile-device-bar{padding:8px 14px}.mobile-device-bar>div{margin-left:0}.mobile-device-bar>span{width:100%}.mobile-connect-dialog{padding:16px}}
+.mobile-device-bar{padding-inline-start:max(20px,env(safe-area-inset-left));padding-inline-end:max(20px,env(safe-area-inset-right))}@media(max-width:600px){.mobile-device-bar{padding-inline-start:max(14px,env(safe-area-inset-left));padding-inline-end:max(14px,env(safe-area-inset-right))}.mobile-device-bar button{min-height:40px;font-size:12px}}
+
+.mobile-account-sheet { width:min(360px,calc(100vw - 40px));border:1px solid var(--line);border-radius:18px;padding:26px;background:var(--panel,var(--bg,#fff));color:var(--ink); }
+.mobile-account-sheet::backdrop { background:rgba(20,25,35,.45);backdrop-filter:blur(6px); }
+.mobile-account-sheet form { display:grid;gap:16px; }
+.mobile-account-sheet label { display:grid;gap:8px; }
+.mobile-account-sheet .check { display:flex;align-items:center;gap:8px; }
+.mobile-account-sheet input[type=password] { width:100%;box-sizing:border-box; }
+.mobile-account-sheet [role=status] { margin:0;font-size:13px; }
+
+.mobile-account-sheet input[type=password] { font-size:16px; }
+
+/* Device/account utilities belong to the disclosure, never above the transcript. */
+#workspaceMenuPanel .mobile-device-bar { display:flex; flex-direction:column; align-items:stretch; gap:6px; padding:10px 2px 2px; margin-top:8px; border-top:1px solid var(--line); border-bottom:0; background:transparent; font-size:11px; }
+#workspaceMenuPanel .mobile-device-bar > span { width:auto; overflow-wrap:anywhere; }
+#workspaceMenuPanel .mobile-device-bar > div { display:grid; grid-template-columns:1fr; margin:0; gap:2px; }
+#workspaceMenuPanel .mobile-device-bar button { min-height:44px; font-size:13px; }
+#workspaceMenuPanel #mobileNotice { flex-basis:auto; white-space:normal; color:var(--ink); line-height:1.6; }
+
+/* Utilities stay small; touch targets retain a comfortable height. */
+#workspaceMenuPanel .mobile-device-bar > div { grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px 8px; }
+#workspaceMenuPanel .mobile-device-bar button { width:auto; padding:4px 8px; text-align:left; font-size:12px; background:transparent; border-color:transparent; }
+#workspaceMenuPanel .mobile-device-info { order:2; margin:2px 0 0; font-size:11px; color:var(--muted); }
+#workspaceMenuPanel .mobile-device-info summary { min-height:32px; display:flex; align-items:center; cursor:pointer; }
+#workspaceMenuPanel .mobile-device-info span { display:block; margin:4px 0; line-height:1.5; overflow-wrap:anywhere; }
+#workspaceMenuPanel .mobile-account-logout { color:var(--muted); }
+#workspaceMenuPanel .mobile-device-bar button[hidden] { display:none; }

@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#f7f8fa" />
+    <title>记录工作台 · 记录与听课</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#workspace">跳到内容</a>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="header-inner">
+          <a
+            class="brand"
+            href="/record"
+            data-route="record"
+            aria-label="记录工作台首页"
+            >记录工作台</a
+          >
+          <nav class="main-nav" aria-label="主导航">
+            <a href="/record" data-route="record"
+              ><span data-icon="chat-circle-text"></span
+              ><span>普通记录</span></a
+            >
+            <a href="/transcript" data-route="transcript"
+              ><span data-icon="text-align-left"></span
+              ><span>课堂逐字稿</span></a
+            >
+            <a href="/assist" data-route="assist"
+              ><span data-icon="book-open-text"></span><span>听课辅助</span></a
+            >
+          </nav>
+          <details id="workspaceMenu" class="workspace-menu">
+            <summary aria-label="更多操作" title="更多操作"><span aria-hidden="true">⋯</span></summary>
+            <div id="workspaceMenuPanel" class="workspace-menu-panel">
+              <div class="header-utilities">
+                <button id="openLibrary" class="utility-button"><span data-icon="folder-simple"></span><span>记录库</span></button>
+                <button id="themeToggle" class="utility-button">深色模式</button>
+                <a href="/settings" data-route="settings" class="utility-button"><span data-icon="sliders-horizontal"></span><span>设置</span></a>
+              </div>
+              <div class="top-actions">
+                <button id="sample" class="text-button">载入示例</button>
+                <button id="openSilence" class="text-button">收音与静音</button>
+                <a href="/design" data-route="design" class="text-link">外观</a>
+              </div>
+            </div>
+          </details>
+        </div>
+      </header>
+      <div class="main-shell">
+        <div class="topbar">
+          <div class="page-context">
+            <span id="breadcrumb">普通记录</span
+            ><span id="sampleBadge" class="badge" hidden>人工示例</span>
+          </div>
+
+        </div>
+        <main id="workspace" tabindex="-1"></main>
+        <div id="status" class="status" role="status" aria-live="polite">
+          准备就绪
+        </div>
+        <section id="recorder" class="recorder" aria-label="录音控制">
+          <div class="record-indicator">
+            <span id="lamp"></span>
+            <div>
+              <strong id="clock">00:00</strong
+              ><small id="micStatus">等待开始录音</small>
+            </div>
+          </div>
+          <canvas
+            id="waveform"
+            width="200"
+            height="38"
+            aria-label="实时收音波形"
+          ></canvas>
+          <div class="record-actions">
+            <label class="upload-button"
+              >导入音频<input
+                id="audioUpload"
+                type="file"
+                accept="audio/*,.mp4,.m4a,.wav,.mp3"
+                hidden /></label
+            ><button id="start" class="primary">开始录音</button
+            ><button id="pause" hidden>暂停</button
+            ><button id="mark" hidden>打点</button
+            ><button id="stop" title="结束录音并保存" class="primary" hidden>结束</button>
+            <button id="retryAnalysis" data-action="retryAnalysis" title="复用已有转录，重试失败的分析或整理">重试失败分析</button>
+            <button id="retranscribeAudio" data-action="transcribe" title="使用本设备保存的完整录音重新识别，确认费用后才发送模型" hidden>重新识别录音</button>
+            <button id="resumeRecording" data-action="resumeRecording" hidden>恢复上次录音</button>
+            <button id="returnRecording" data-action="returnRecording" hidden>录音中 · 返回当前录音</button>
+            <button id="sendCurrent" data-action="sendCurrent" title="主动保存并识别当前已录音片段" hidden>发送当前段</button>
+          </div>
+        </section>
+      </div>
+    </div>
+    <dialog id="libraryDialog" class="library-dialog">
+      <div class="dialog-header">
+        <div>
+          <h2>记录库</h2>
+          <p class="hint">查看对话、课堂逐字稿和听课记录。</p>
+        </div>
+        <button data-close="libraryDialog">关闭</button>
+      </div>
+      <div class="library-tools">
+        <label class="sr-only" for="sessionSearch">搜索记录</label
+        ><input
+          id="sessionSearch"
+          type="search"
+          class="search"
+          placeholder="搜索记录标题…"
+        /><button id="new" class="primary">新建记录</button>
+      </div>
+      <div id="sessions" class="session-list"></div>
+      <p class="hint library-privacy">
+        录音和文稿保存在本机；调用模型前会确认发送与费用。
+      </p>
+    </dialog>
+    <dialog id="silenceDialog" class="wide-dialog">
+      <div class="dialog-header">
+        <div>
+          <h2>先看本次收音，再选择送出的声音。</h2>
+        </div>
+        <button data-close="silenceDialog">关闭</button>
+      </div>
+      <div class="gate-layout">
+        <div>
+          <div id="reviewAudioBox" hidden>
+            <label for="reviewPlayer">试听原音，核对较轻的声音</label
+            ><audio id="reviewPlayer" controls preload="metadata"></audio>
+          </div>
+          <div id="liveMeter">
+            <div class="meter-header">
+              <span>当前收音</span><strong id="inputDb">等待录音</strong>
+            </div>
+            <meter
+              id="inputMeter"
+              min="-96"
+              max="0"
+              low="-60"
+              high="-25"
+              optimum="-30"
+              value="-96"
+            ></meter>
+            <p id="inputGate" class="hint">
+              录音和计时不受静音跳过影响。dBFS 为数字信号电平，不是环境声压级。
+            </p>
+          </div>
+          <div class="chart-head">
+            <h3>阈值与送出时长</h3>
+            <button id="previewSilence">分析当前录音 · 免费</button>
+          </div>
+          <canvas
+            id="gateChart"
+            width="780"
+            height="260"
+            aria-label="横轴静音阈值，纵轴预计送出时长"
+          ></canvas>
+          <p id="curveCaption" class="hint">
+            录制至少 12 秒或导入音频，即可看到真实曲线。不会向 AI 发送音频。
+          </p>
+          <p id="audioQuality" class="hint"></p>
+          <div id="gateNumbers" class="gate-numbers"></div>
+          <div id="recommendation" class="recommendation" hidden></div>
+          <button id="applyRecommendation" hidden>使用保守建议值</button>
+        </div>
+        <div class="gate-controls">
+          <label
+            >阈值判断<select id="thresholdMode">
+              <option value="auto">自动 · 每次按收音重新判断</option>
+              <option value="manual">手动 · 使用我选择的阈值</option>
+            </select></label
+          >
+          <label class="check"
+            ><input
+              id="silenceEnabled"
+              type="checkbox"
+              checked
+            />跳过长静音</label
+          ><label
+            >阈值 <strong id="thresholdLabel">−55 dBFS</strong
+            ><input
+              id="silenceThreshold"
+              type="range"
+              min="-80"
+              max="-20"
+              step="1"
+              value="-55"
+          /></label>
+          <div class="range-ends">
+            <span>更保守，保留轻声</span><span>更积极，可能漏字</span>
+          </div>
+          <label
+            >低于阈值多久后暂停送出（秒）<input
+              id="silenceDuration"
+              type="number"
+              min="0.5"
+              max="10"
+              step="0.1"
+              value="3" /></label
+          ><label
+            >语音结束后保留（秒）<input
+              id="silencePadding"
+              type="number"
+              min="0.15"
+              max="1.5"
+              step="0.05"
+              value="0.35"
+          /></label>
+          <label>重新出声前补送（秒）<input id="silencePreRoll" type="number" min="0.15" max="3" step="0.05" value="1"></label>
+          <p class="hint">
+            低于阈值后先保留上面设置的等待时长，再跳过后续静音；恢复时补送前面的声音。原音和计时一直继续。自动模式最高使用 −55 dBFS 的保守阈值；手动模式可自行调整。下降点不等于人声边界，建议回听轻声。
+          </p>
+          <details>
+            <summary>逐个阈值的数值</summary>
+            <div id="curveTable" class="curve-table"></div>
+          </details>
+        </div>
+      </div>
+      <div class="gate-review-actions">
+        <div class="gate-review-copy">
+          <p id="costEstimate" class="cost-estimate"></p>
+          <p class="hint">
+            关闭会保留原音，不会开始付费转录。实时模式的更改作用于后续尚未发送的片段。
+          </p>
+        </div>
+        <button id="continueTranscribe" class="primary" hidden>
+          确认阈值并转录
+        </button>
+      </div>
+    </dialog>
+    <dialog id="promptDialog" class="wide-dialog">
+      <div class="dialog-header">
+        <div>
+          <h2 id="promptTitle">重新整理</h2>
+        </div>
+        <button data-close="promptDialog">关闭</button>
+      </div>
+      <div class="prompt-body">
+        <label>来源版本<select id="promptSource"></select></label
+        ><label
+          >本次提示词<textarea id="promptText" rows="10"></textarea>
+        </label>
+        <p class="hint">
+          保存为新版本，不覆盖原稿。转录模型与整理模型可以分别设置。
+        </p>
+        <div class="row">
+          <button id="resetPrompt">恢复默认提示词</button
+          ><button id="runPrompt" class="primary">确认参数并生成</button>
+        </div>
+      </div>
+    </dialog>
+    <aside
+      id="questionInboxLauncher"
+      class="question-inbox-launcher"
+      hidden
+      aria-live="polite"
+    >
+      <span id="questionInboxCount"></span
+      ><button id="openQuestionInbox">查看题目</button>
+    </aside>
+    <dialog id="questionAlertDialog" class="question-alert-dialog" aria-labelledby="questionAlertText" aria-describedby="questionAlertState">
+      <div class="question-alert-shell">
+        <div class="question-alert-label"><span class="question-alert-dot" aria-hidden="true"></span><span id="questionAlertBadge">老师提问了</span></div>
+        <h2 id="questionAlertText"></h2>
+        <p id="questionAlertState"></p>
+        <div class="question-alert-actions"><button id="viewQuestionAlert" class="primary">查看本题与回答</button><button id="dismissQuestionAlert">继续听课</button></div>
+        <p id="questionAlertQueued" class="question-alert-queued"></p>
+      </div>
+    </dialog>
+    <dialog
+      id="questionDialog"
+      class="question-dialog"
+      aria-labelledby="questionText"
+    >
+      <div class="question-top">
+        <span id="questionBadge">课堂提问</span
+        ><button data-close="questionDialog">收起 · Esc</button>
+      </div>
+      <div class="question-workspace">
+        <section class="question-current">
+          <nav class="question-navigation" aria-label="切换题目，左右或上下方向键">
+            <button id="previousQuestion">上一题</button
+            ><span id="questionPosition">暂无题目</span
+            ><button id="nextQuestion">下一题</button>
+          </nav>
+
+          <h2 id="questionText"></h2>
+          <div class="answer-card">
+            <span>参考回答</span>
+            <p id="answerText"></p>
+            <small id="evidenceText"></small>
+            <div id="questionSources"></div>
+            <details class="request-details"><summary>本题课堂上下文与时间线</summary><div id="questionContextText" class="actual-params"></div></details>
+            <p id="answerRequestInfo" class="answer-request-info"></p>
+          </div>
+          <section class="question-followup" aria-labelledby="followupHeading"><h3 id="followupHeading">继续追问这道题</h3><div id="questionFollowupHistory"></div><textarea id="questionFollowupText" rows="3" maxlength="6000" aria-label="本题追问" placeholder="例如：为什么这里要减去这个约束？"></textarea><div class="followup-controls"><label for="questionFollowupThinking">Thinking 强度</label><select id="questionFollowupThinking"><option value="off">关闭 Thinking</option></select><button id="sendQuestionFollowup">发送追问</button></div><p id="followupParameters"></p><p id="followupStatus" role="status"></p></section>
+          <div class="question-reading-controls">
+            <p id="questionAttentionStatus"></p>
+            <button id="questionAutoToggle">保持当前阅读</button>
+          </div>
+          <p class="question-footnote">
+            查看题目不会暂停录音或转录。新题保留在历史中，参考回答需核对。
+          </p>
+        </section>
+        <aside class="question-history-panel">
+          <h3>题目历史</h3>
+          <p>点击切换，当前题目不会被新题顶掉。</p>
+          <div
+            id="questionNewNotice"
+            class="question-new-notice"
+            hidden
+            aria-live="polite"
+          >
+            <span id="questionNewCount"></span
+            ><button id="showQueuedQuestion">查看新题</button>
+          </div>
+          <nav id="questionHistory" aria-label="题目历史"></nav>
+        </aside>
+      </div>
+    </dialog>
+    <dialog id="keepDialog">
+      <div class="dialog-header"><h2>课程结束，保留这段录音吗？</h2></div>
+      <p>原录音已暂存本机。保留后可修改提示词、换模型重新分析。</p>
+      <div class="row">
+        <button id="deleteAudio" class="danger">删除原录音</button
+        ><button id="keepAudio" class="primary">保留原录音</button>
+      </div>
+    </dialog>
+    <script src="/app.js"></script>
+  </body>
+</html>

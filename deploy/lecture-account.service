@@ -1,0 +1,30 @@
+[Unit]
+Description=Lecture Workspace password login and model gateway
+After=network-online.target lecture-sync.service
+Wants=network-online.target
+
+[Service]
+User=lecture-account
+Group=lecture-account
+WorkingDirectory=/opt/lecture-account
+Environment=LECTURE_ACCOUNT_STORE=/var/lib/lecture-account
+Environment=LECTURE_ACCOUNT_HOST=127.0.0.1
+Environment=LECTURE_ACCOUNT_PORT=8792
+Environment=LECTURE_ACCOUNT_ORIGIN=https://lecture.example.com
+ExecStart=/usr/bin/python3 /opt/lecture-account/cloud_server.py serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/lecture-account
+MemoryMax=512M
+TasksMax=96
+LimitNOFILE=1024
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

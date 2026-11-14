@@ -1,0 +1,15 @@
+data/
+build/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+!.env.example
+*.wav
+*.m4a
+*.mp3
+*.pem
+*.key
+node_modules/
+.venv/

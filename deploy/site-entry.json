@@ -1,0 +1,15 @@
+{
+  "name": "记录工作台 · 同步仓库",
+  "domain": "lecture.example.com",
+  "port": "443",
+  "url": "https://lecture.example.com/",
+  "backend": "nginx 443 SNI → 8445 HTTPS → static PWA; /account/ → 127.0.0.1:8792; /v1/ → 127.0.0.1:8791",
+  "kind": "私有",
+  "note": "Password login and server-managed model keys via lecture-account:8792; model audio fragments are forwarded in memory without recording storage. Full original audio remains on recording devices. Existing encrypted lecture-sync:8791 retains outbound isolation. See ACCOUNT_DEPLOY.md in the local lecture-workspace repository.",
+  "stats_name": "记录工作台同步仓库",
+  "icon": "🎙",
+  "upstream": "127.0.0.1:8791",
+  "service": "systemd:lecture-sync",
+  "expect": 200,
+  "tracker": "skip:device-local recorder handles private audio and keys; no analytics JavaScript injection; nginx access logs cover the public shell"
+}
