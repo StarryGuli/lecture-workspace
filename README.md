@@ -54,4 +54,4 @@ python3 -m unittest test_sync test_mobile_build
 node --test test_mobile_*.mjs
 ```
 
-当前为私有源码仓库；未授予项目整体的开源许可，第三方组件遵循各自许可证。
+本仓库公开提供源码供查看；尚未授予项目整体的开源许可，第三方组件遵循各自许可证。
