@@ -1,6 +1,6 @@
 > **发布副本提醒**：下文是原部署拓扑的维护参考；域名、IP、源码路径已替换为示例值。历史日期和验收结果不证明新环境已部署。首次部署需准备自己的主机、HTTPS、运行用户、目录和站点登记，检查全部脚本后执行。当前账户网关以 ACCOUNT_DEPLOY.md 为准。
 
-# 部署文档 · 记录工作台同步仓库（CMIN2）
+# 部署文档 · 记录工作台同步仓库
 
 > 给后续要修改并重新部署的人或模型：**先读「硬约束」和「更新部署」两节**，其余按需查。
 > 最近一次部署：2026-11-10。PWA 版本 `5d3d0db9eae8a89324714cd43fba52df0cf1ddd6b70bfddcabc309bb1ef2a762`（本地录音恢复日志、原会话续录、录音中查看历史）；站点审计 128 项、失败 0。恢复日志留在设备端，不新增服务器音频存储或同步。
@@ -9,12 +9,12 @@
 
 ## 一、这是什么
 
-记录工作台现在有两种运行方式：Mac 本地服务（`python3 server.py`，监听 `127.0.0.1:8766`），以及由 CMIN2 提供静态文件的设备端 PWA 网页。PWA 的录音、原音保存、静音判断、模型请求都在打开网页的手机／平板／电脑上进行。
+记录工作台现在有两种运行方式：Mac 本地服务（`python3 server.py`，监听 `127.0.0.1:8766`），以及由服务器提供静态文件的设备端 PWA 网页。PWA 的录音、原音保存、静音判断、模型请求都在打开网页的手机／平板／电脑上进行。
 
-CMIN2 的 Python 服务仍然只是「加密同步仓库」，不运行 `server.py`，不接收录音或转发模型请求；首页由 nginx 提供 PWA，`/v1/` 和 `/healthz` 保留原同步服务。手机前端的构建、发布、回滚与连接步骤见 [MOBILE_DEPLOY.md](MOBILE_DEPLOY.md)。
+服务器上的 Python 服务仍然只是「加密同步仓库」，不运行 `server.py`，不接收录音或转发模型请求；首页由 nginx 提供 PWA，`/v1/` 和 `/healthz` 保留原同步服务。手机前端的构建、发布、回滚与连接步骤见 [MOBILE_DEPLOY.md](MOBILE_DEPLOY.md)。
 
 ```
- 用户 Mac（数据主人）                                         CMIN2（只存密文）
+ 用户 Mac（数据主人）                                         服务器（只存密文）
 ┌──────────────────────────────┐                      ┌────────────────────────────────────┐
 │ server.py :8766  ←浏览器       │                      │ nginx 443 SNI 分流 → 8445 vhost      │
 │   │  模型请求只从这里发出 ──→ 平台 │                      │   lecture.example.com   │
@@ -27,10 +27,10 @@ CMIN2 的 Python 服务仍然只是「加密同步仓库」，不运行 `server.
 ## 二、硬约束（改任何东西前先确认没有违反）
 
 1. **录音永远不上传。** 客户端不读 `*.wav`、不导出 `chunks` 表；服务端按名字拒绝音频扩展名。`test_sync.py::test_audio_never_leaves_the_machine` 守着这条，改同步逻辑必须保持它通过。
-2. **模型请求只从录制／分析设备发。** CMIN2 上没有 `server.py`、没有任何平台密钥明文、也**不能**对外联网：systemd 单元用 `IPAddressAllow=127.0.0.0/8 ::1` + `IPAddressDeny=any`，系统层只放行回环（已实测连 1.1.1.1 与 api.siliconflow.cn 都被拒）。**不要放宽，也不要把 `server.py` 部署到 CMIN2。**
+2. **模型请求只从录制／分析设备发。** 服务器上没有 `server.py`、没有任何平台密钥明文、也**不能**对外联网：systemd 单元用 `IPAddressAllow=127.0.0.0/8 ::1` + `IPAddressDeny=any`，系统层只放行回环（已实测连 1.1.1.1 与 api.siliconflow.cn 都被拒）。**不要放宽，也不要把 `server.py` 部署到这台服务器。**
 3. **用户数据只存密文。** 公开的 PWA 静态资源不含用户数据。配置、密钥、分析结果都在本机用 openssl AES-256-CBC（PBKDF2 20 万轮）加密并附 HMAC 后才上传。服务器没有口令；服务器被拿下也读不到密钥和文稿。
 4. **不要把 token、口令、密钥值打印到终端、日志、文档或 git。** 它们只在 Mac 的 `~/.lecture-sync/`（权限 600）。文档里只写位置。
-5. **改 CMIN2 的站点登记必须跑自检**：`python3 /root/webserver/site_audit.py`，❌ 为 0 才算完成（见 CMIN2 `/root/webserver/SITES-RUNBOOK.md`）。
+5. **改服务器站点登记后必须跑站点自检**：原部署使用自己的 `site_audit.py`，失败项为 0 才算完成；换成你服务器上的登记与检查流程。
 6. 对服务器的发布需要用户授权；本次手机网页版上线已获用户明确“做”的授权。其他项目或访问权限变更仍不属于这次范围。
 
 ## 三、同步什么 / 不同步什么
@@ -53,16 +53,16 @@ CMIN2 的 Python 服务仍然只是「加密同步仓库」，不运行 `server.
 | 什么 | 在哪 |
 |---|---|
 | 项目源码 | Mac：`/path/to/lecture-workspace`（目前没有 git remote） |
-| 同步客户端 / 服务端 | `sync_client.py`（本机运行）/ `sync_server.py`（部署到 CMIN2） |
+| 同步客户端 / 服务端 | `sync_client.py`（本机运行）/ `sync_server.py`（部署到服务器） |
 | 部署文件 | `deploy/`：`lecture-sync.service`、`nginx-vhost.conf`、`site-entry.json`、`deploy.sh` |
 | 本机连接配置 | `~/.lecture-sync/config.json`（url + token）、`passphrase`（加密口令）、`state.json`（各项已同步的版本） |
-| 服务器代码 | CMIN2 `/opt/lecture-sync/sync_server.py`（root 所有，发布时自动留 `.bak-<时间>`） |
-| 服务器数据 | CMIN2 `/var/lib/lecture-sync/`（700，属主 `lecture-sync`）：`config/ keys/ records/` + `token.sha256`（只存 token 的哈希） |
+| 服务器代码 | `/opt/lecture-sync/sync_server.py`（root 所有，发布时自动留 `.bak-<时间>`） |
+| 服务器数据 | `/var/lib/lecture-sync/`（700，属主 `lecture-sync`）：`config/ keys/ records/` + `token.sha256`（只存 token 的哈希） |
 | 服务 | systemd `lecture-sync`，监听 `127.0.0.1:8791`，用户 `lecture-sync`，内存上限 96M |
 | 公网入口 | `https://lecture.example.com/`（泛解析子域名，DNS 与证书自动覆盖） |
 | nginx | `/etc/nginx/sites-available/lecture-sync`（软链到 `sites-enabled/`）；分流行在 `/etc/nginx/streams-enabled/443-split.conf` |
 | 后台登记 | `/root/webserver/sites.json` 中名为「记录工作台 · 同步仓库」的条目（控制台 → 站点入口） |
-| 首次安装时的备份 | CMIN2 `/root/443-split.conf.bak-20261104-101126-lecture`、`/root/webserver/sites.json.bak-20261104-101126-lecture` |
+| 首次安装时的备份 | 修改 nginx 分流和站点登记前各留一份带时间戳的备份 |
 
 ## 五、日常使用（在 Mac 上，项目目录里）
 
@@ -110,7 +110,7 @@ ssh root@203.0.113.10 'systemctl daemon-reload && systemctl restart lecture-sync
 
 ## 七、首次安装（已完成；灾难恢复或换服务器时照做）
 
-在项目目录里，服务器 `root@203.0.113.10`（CMIN2）：
+在项目目录里，服务器 `root@203.0.113.10`：
 
 1. 本机初始化：`python3 sync_client.py init --url https://lecture.example.com`，记下输出的 token 哈希。
 2. 服务器：建系统用户与目录，装代码和单元，写入 token 哈希，启动。
@@ -125,9 +125,9 @@ ssh root@203.0.113.10 'systemctl daemon-reload && systemctl restart lecture-sync
    chown lecture-sync:lecture-sync /var/lib/lecture-sync/token.sha256; chmod 600 /var/lib/lecture-sync/token.sha256
    systemctl daemon-reload && systemctl enable --now lecture-sync
    ```
-3. nginx（按 `SITES-RUNBOOK.md`「新增站点标准流程」；**先备份**，`nginx -t` 不过就还原）：
+3. nginx（按你服务器的新增站点流程；**先备份**，`nginx -t` 不过就还原）：
    - `deploy/nginx-vhost.conf` → `/etc/nginx/sites-available/lecture-sync`，软链到 `sites-enabled/`（不要直接在 `sites-enabled/` 写实体文件）。
-   - `/etc/nginx/streams-enabled/443-split.conf` 的「已登记自家站点」区加一行：`lecture.example.com  127.0.0.1:8445;`（要在正则行上面）。
+   - `/etc/nginx/streams-enabled/443-split.conf` 的站点分流表加一行：`lecture.example.com  127.0.0.1:8445;`（要在正则行上面）。
    - `nginx -t && systemctl reload nginx`。
    - 后端只监听 `127.0.0.1`，不需要 iptables 封端口。
 4. **后台登记**：把 `deploy/site-entry.json` 追加进 `/root/webserver/sites.json`（数组），5 秒内控制台「站点入口」、访客统计、状态卡自动生效。`stats_name` 一旦定了不要改。JS 埋点已决定 `skip`（纯接口无页面）。
@@ -152,8 +152,8 @@ ssh root@203.0.113.10 'systemctl daemon-reload && systemctl restart lecture-sync
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `连不上同步服务器` | 先 `curl https://lecture.example.com/healthz`。Mac 开着 Shadowrocket 的 TUN 时本地测试可能被扭曲，换网络或关代理对比；服务器侧 `deploy.sh status` |
-| `服务器拒绝了 token` | 服务器的 `token.sha256` 与 `~/.lecture-sync/config.json` 不一致 → `./deploy/deploy.sh token`。短时间大量 401 可能触发 CMIN2 的 fail2ban（`nginx-4xx-flood`）暂时封 IP |
+| `连不上同步服务器` | 先 `curl https://lecture.example.com/healthz`。本机开着代理或 TUN 模式时本地测试可能被扭曲，换网络或关代理对比；服务器侧 `deploy.sh status` |
+| `服务器拒绝了 token` | 服务器的 `token.sha256` 与 `~/.lecture-sync/config.json` 不一致 → `./deploy/deploy.sh token`。短时间大量 401 可能触发服务器的 fail2ban 等防护暂时封 IP |
 | `校验失败：口令不对，或密文被改动` | 本机 `passphrase` 与加密时的不同（新设备没拷口令，或被 `--new-passphrase` 换过） |
 | push 报 `服务器上有另一台设备的修改` | 见「冲突规则」：先 `pull`，或明确选 `--prefer local/remote` |
 | push 报 `上传瞬间服务器版本变了` | 两台设备同时推，重跑一次 |
@@ -165,8 +165,7 @@ ssh root@203.0.113.10 'systemctl daemon-reload && systemctl restart lecture-sync
 ## 十、常见坑（来自这台服务器和 Mac 的经验）
 
 - Mac 的 shell 是 zsh：没有 `timeout` 命令，未加引号的变量不会按空格拆分，没匹配上的通配符会让整条命令中止。长脚本写成文件再 `ssh … 'bash -s' < 文件` 最稳。
-- CMIN2 内存只有 ~1G、磁盘余 3.6G：同步仓库很小（全部数据约 0.5 MB），别在上面放大文件。
-- 不要在 CMIN2 上用 `pm2 update`（会让 MES 掉线，见该服务器手册）；本服务是 systemd，不受影响。
+- 同步仓库很小（全部数据约 0.5 MB），小内存服务器也够用；本服务由 systemd 管理。
 - 改 `443-split.conf` 之前一定先备份，`nginx -t` 通过才 `reload`。
 - 全局文档 `~/.claude/CLAUDE.md` 的「站点 → 服务器对照」表里已登记本站，改域名要同步改。
 
