@@ -73,3 +73,18 @@ test('explicit failed-analysis retry bypasses the failed result cache while reus
  const result=await f.runtime.live(sid,{seq:0,reason:'sentence',config,retryFailed:true},()=>{});
  assert.equal(result.analysisError,undefined);assert.equal(result.correction.correctionState,'corrected');assert.ok(f.calls.length>0);assert.equal(f.calls.filter(c=>c.url.includes('/audio/transcriptions')).length,0);
 });
+
+// 2026-11-16: an answer has its own slots; while it is still being written, the analysis slot
+// (corrections/detection for other segments) is already free, and the question alert went out first.
+test('answering a question does not hold the correction/detection slot',async()=>{
+ const f=fixture(),sid=await record(f);let release;const gate=new Promise(r=>release=r);const events=[];
+ const chat=f.runtime.model.chat.bind(f.runtime.model);
+ f.runtime.model.chat=async(cfgArg,system,...rest)=>{if(String(system).includes('课堂答题助手')){events.push(['answer-start',f.runtime.analysisLimit.running]);await gate;}return chat(cfgArg,system,...rest);};
+ const job=await f.runtime.api(`/api/sessions/${sid}/live`,{seq:0,reason:'sentence',config:cfg(),consent:true});
+ for(let i=0;i<500&&!events.length;i++)await new Promise(r=>setTimeout(r,2));
+ assert.deepEqual(events[0],['answer-start',0]);
+ assert.equal(f.runtime.questionCache.size,1);assert.equal([...f.runtime.questionCache.values()][0].analysis.answerPending,true);
+ release();const r=await done(f.runtime,job);
+ assert.equal(r.analysis.isQuestion,true);assert.match(r.analysis.answer,/屈服强度/);assert.equal(r.analysis.answerPending,false);
+ assert.ok((await f.runtime.rows('revisions',sid)).some(x=>x.kind==='live'&&x.content.analysis.answer.includes('屈服强度')));
+});

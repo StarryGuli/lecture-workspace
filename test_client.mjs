@@ -251,12 +251,15 @@ test('meeting pickup uses a short pause independently of classroom settings',asy
  h.run('processor.onaudioprocess({inputBuffer:{getChannelData:()=>new Float32Array(16000).fill(.1)}});processor.onaudioprocess({inputBuffer:{getChannelData:()=>new Float32Array(10240)}})');
  await h.run('queue');assert.equal(h.run('saved.length'),1);
 });
-test('the visible re-recognition action opens review without sending audio, including empty retry fallback',async()=>{
+test('re-recognition (ASR) and re-analysis are separate: retry never turns into a new transcription',async()=>{
  const h=harness();h.run("detailData.hasAudio=true;recording=false;finishing=false;busy=0;var reviews=0;reviewAudio=async()=>reviews++");
  h.run('updateControls()');assert.equal(h.el('retranscribeAudio').hidden,false);assert.equal(h.el('retranscribeAudio').disabled,false);
+ // No failed work: the re-analysis button stays hidden.
+ assert.equal(h.el('retryAnalysis').hidden,true);
  await h.run("action('transcribe',{})");assert.equal(h.run('reviews'),1);assert.equal(h.run('sent.length'),0);
- await h.run('retryFailedAnalysis()');assert.equal(h.run('reviews'),2);assert.equal(h.run('sent.length'),0);
- h.run('detailData.hasAudio=false;updateControls()');assert.equal(h.el('retranscribeAudio').disabled,true);
+ await h.run('retryFailedAnalysis()');assert.equal(h.run('reviews'),1);assert.equal(h.run('sent.length'),0);
+ // Without audio on this device, re-recognition is not offered at all.
+ h.run('detailData.hasAudio=false;updateControls()');assert.equal(h.el('retranscribeAudio').hidden,true);
 });
 test('automatic task retries are bounded, back off and set the cache-bypass flag',async()=>{
  const h=harness();h.run(`var posts=[],delays=[];setTimeout=(fn,ms)=>{delays.push(ms);Promise.resolve().then(fn);};api=async(path,body)=>{if(path.startsWith('/api/jobs/'))return posts.length<3?{status:'error',message:'模型请求超时'}:{status:'done',result:{ok:true}};posts.push(body);return {job:'job'};};`);
@@ -276,8 +279,11 @@ test('different failed segments can retry concurrently',async()=>{
  const h=harness();h.run(`var counts=new Map(),initial=[];setTimeout=fn=>Promise.resolve().then(fn);api=async(path,body)=>{if(path.startsWith('/api/jobs/')){const seq=Number(path.split('/').at(-1));return counts.get(seq)===1?{status:'error',message:'分析超时'}:{status:'done',result:{seq}};}counts.set(body.seq,(counts.get(body.seq)||0)+1);initial.push(body.seq);return {job:String(body.seq)};};`);
  await h.run("Promise.all([actualJobs('/api/sessions/synthetic/live',{seq:0},()=>{}),actualJobs('/api/sessions/synthetic/live',{seq:1},()=>{})])");assert.equal(h.run('initial.slice(0,2).join()'),'0,1');assert.equal(h.run('counts.get(0)'),2);assert.equal(h.run('counts.get(1)'),2);
 });
-test('recording finish saves a fallback snapshot before requesting full acoustic review',async()=>{
- const h=harness();h.run("view='record';var finishActions=[];api=async path=>{finishActions.push(path);return {seconds:4};}");
+test('recording finish saves quickly; the whole-recording re-check runs only when opted in',async()=>{
+ const off=harness();off.run("view='record';api=async()=>({seconds:4})");
+ await off.run('beginRecording()');off.utterance();await off.run('queue');await off.run('liveQueue');await off.run('Promise.allSettled([...analysisTasks])');
+ await off.run('finishRecording()');assert.equal(off.run("sent.filter(x=>x.path.endsWith('/review-live-audio')).length"),0);
+ const h=harness();h.run("view='record';options.live.finalAudioReview=true;var finishActions=[];api=async path=>{finishActions.push(path);return {seconds:4};}");
  await h.run('beginRecording()');h.utterance();await h.run('queue');await h.run('liveQueue');await h.run('Promise.allSettled([...analysisTasks])');
  await h.run('finishRecording()');
  assert.equal(h.run("sent.filter(x=>x.path.endsWith('/review-live-audio')).length"),1);
@@ -581,10 +587,12 @@ test('capture status distinguishes actual input, waiting threshold, pause and in
  const h=harness();
  h.run(`recording=true;starting=false;paused=false;lastAudioAt=Date.now();liveSession=true;options.silence={enabled:true,minSilence:1.5,padding:.35};effectiveThreshold=-40;lastInputDb=-30;belowThresholdSeconds=0;`);
  assert.equal(h.run('captureStatusState().kind'),'active');
+ // A short pause keeps the lamp on; standby only after the full silence hold.
  h.run('lastInputDb=-60;belowThresholdSeconds=1');
- assert.match(h.run('captureStatusState().title'),/等待/);
+ assert.equal(h.run('captureStatusState().kind'),'active');
  h.run('belowThresholdSeconds=3');
  assert.match(h.run('captureStatusState().title'),/待机/);
+ h.run('lastInputDb=-30;belowThresholdSeconds=0');assert.equal(h.run('captureStatusState().kind'),'active');
  h.run('modelPaused=true');assert.equal(h.run('captureStatusState().kind'),'paused');
  h.run('modelPaused=false;lastAudioAt=Date.now()-5000');assert.equal(h.run('captureStatusState().kind'),'warning');
  h.run('recording=false');assert.equal(h.run('captureStatusState().kind'),'idle');
@@ -639,7 +647,8 @@ test('ordinary records keep explicitly selected historical text versions readabl
  test('lamp updates without an expanded details panel and follows current capture state',()=>{
  const h=harness();h.run("var realGet=document.getElementById;document.getElementById=id=>id==='captureStatus'?null:realGet(id); recording=true;lastAudioAt=Date.now();lastInputDb=-20;effectiveThreshold=-40;updateCaptureStatus()");
  assert.equal(h.el('lamp').dataset.state,'active');assert.equal(h.el('micStatus').textContent,'正在收音');
- h.run('lastInputDb=-65;updateCaptureStatus()');assert.equal(h.el('lamp').dataset.state,'gated');
+ h.run('lastInputDb=-65;belowThresholdSeconds=1;updateCaptureStatus()');assert.equal(h.el('lamp').dataset.state,'active');
+ h.run('belowThresholdSeconds=options.silence.minSilence;updateCaptureStatus()');assert.equal(h.el('lamp').dataset.state,'gated');
  h.run('lastAudioAt=0;updateCaptureStatus()');assert.equal(h.el('lamp').dataset.state,'warning');
  h.run('recording=false;updateCaptureStatus()');assert.equal(h.el('lamp').dataset.state,'idle');
  });

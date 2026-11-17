@@ -16,17 +16,24 @@ block=''' + repr('''    # lecture-account gateway managed
         proxy_request_buffering off;
         proxy_buffering off;
         proxy_cache off;
-        proxy_read_timeout 180s;
-        proxy_send_timeout 180s;
+        # Long enough for an end-of-class review chunk on the Windows GPU plus one fallback.
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
         client_max_body_size 32m;
         add_header Cache-Control "no-store" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "no-referrer" always;
     }
 ''') + '''
+changed=False
 if marker not in text:
  if 'location ^~ /account/' in text:raise RuntimeError('Unmanaged account route; inspect first')
- assert text.rstrip().endswith('}');text=text.rstrip()[:-1]+block+chr(125)+chr(10)
+ assert text.rstrip().endswith('}');text=text.rstrip()[:-1]+block+chr(125)+chr(10);changed=True
+else:
+ # Replace only the managed block when its settings changed; everything else stays byte-identical.
+ start=text.index('    '+marker);end=text.index(chr(10)+'    }'+chr(10),start)+7
+ if text[start:end]!=block:text=text[:start]+block+text[end:];changed=True
+if changed:
  backup=p.with_name(p.name+'.account-backup-'+str(time.time_ns()));shutil.copy2(p,backup)
  p.write_text(text)
  try:

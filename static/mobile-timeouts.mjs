@@ -14,6 +14,9 @@ export function upgradeTimeouts(config){
 }
 export function requestWait({config,role,provider,seconds=0,body,warm=false}){
  const configured=Number(config[role]?.timeout)||Number(config.timeout)||120;
+ // Gateway-relayed own GPU: the gateway waits ~10s+0.8x audio, then may retry on the paid fallback.
+ // It never waits for a cold model load (it falls back instead), so no load allowance here.
+ if(provider?.privateRelay&&role==='asr')return Math.max(30,Math.min(600,Math.ceil(40+1.5*Math.max(0,seconds))));
  if(config.live?.timeoutMode!=='auto')return Math.max(2,Math.min(600,configured));
  const local=provider.auth==='No key (local server)'||provider.isLocalModel===true;
  let wait;

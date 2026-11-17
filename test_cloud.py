@@ -254,4 +254,104 @@ class CloudTests(unittest.TestCase):
             self.assertEqual(r.returncode, expected); self.assertNotIn(password, r.stdout)
 
 
+class PrivateASRTests(unittest.TestCase):
+    """Windows GPU ASR over Tailscale: routing, fallback and isolation. No network."""
+    request = CloudTests.request
+    login = CloudTests.login
+    AUDIO = b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n' + b'\0' * 64000 + b'\r\n--b--\r\n'
+    MULTIPART = {'Content-Type': 'multipart/form-data; boundary=b'}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.calls, self.private_calls = [], []
+        self.health = {'loaded': True, 'busy': False}
+        self.private_status = 200
+        def transport(*args):
+            self.calls.append(args); return Response(b'{"text":"fallback text"}')
+        def private_fetch(method, path, headers, body, timeout):
+            self.private_calls.append((method, path, headers, body, timeout))
+            if self.health is None: raise OSError('unreachable')
+            if path == '/health': return Response(json.dumps(self.health).encode())
+            if path == '/warmup': return Response(b'{"warming":true}')
+            return Response(b'{"text":"windows text"}', status=self.private_status)
+        self.dns = patch.object(c.socket, 'getaddrinfo', return_value=[(2, 1, 6, '', ('8.8.8.8', 443))]); self.dns.start()
+        settings = c.private_asr_settings({'LECTURE_PRIVATE_ASR_URL': 'http://100.100.100.100:11500', 'LECTURE_PRIVATE_ASR_FALLBACK': 'siliconflow'})
+        self.a = c.Account(self.tmp.name, origin='https://test.example', transport=transport, private_asr=settings, private_fetch=private_fetch)
+        self.a.set_password('123456')
+        self.s = types.SimpleNamespace(account=self.a)
+        self.cookie = ''; self.csrf = ''
+        self.login()
+        body = {'provider': {'id': 'siliconflow', 'name': 'SiliconFlow', 'baseURL': 'https://api.siliconflow.cn/v1'}, 'key': 'sf-secret'}
+        self.assertEqual(self.request('POST', '/account/providers', body)[0], 200)
+
+    def tearDown(self):
+        self.dns.stop(); self.tmp.cleanup()
+
+    def transcribe(self):
+        self.a.private_state['at'] = 0.0  # each case starts with a fresh health check
+        return self.request('POST', '/account/model/windows-asr/transcribe', self.AUDIO, self.MULTIPART)
+
+    def test_settings_only_accept_private_http_addresses(self):
+        ok = c.private_asr_settings({'LECTURE_PRIVATE_ASR_URL': 'http://192.168.5.10:11500'})
+        self.assertEqual((ok['host'], ok['port']), ('192.168.5.10', 11500))
+        self.assertIsNone(c.private_asr_settings({}))
+        for bad in ('https://100.100.100.100:11500', 'http://8.8.8.8:11500', 'http://127.0.0.1:11500',
+                    'http://100.100.100.100', 'http://100.100.100.100:11500/v1', 'http://win.example:11500'):
+            with self.assertRaises(SystemExit, msg=bad): c.private_asr_settings({'LECTURE_PRIVATE_ASR_URL': bad})
+
+    def test_bootstrap_lists_relay_without_address(self):
+        out = self.request('GET', '/account/bootstrap')[1]
+        relay = next(p for p in out['providers'] if p['id'] == 'windows-asr')
+        self.assertTrue(relay['privateRelay'] and relay['ownHardware'] and relay['asrOnly'])
+        self.assertEqual(relay['fallbackProvider'], {'id': 'siliconflow', 'name': 'SiliconFlow'})
+        self.assertNotIn('100.100.100.100', json.dumps(out))
+        # Clients cannot claim or overwrite the reserved id, nor use it for chat.
+        self.assertEqual(self.request('POST', '/account/providers', {'provider': {'id': 'windows-asr', 'name': 'x', 'baseURL': 'https://api.example/v1'}})[0], 400)
+        self.assertEqual(self.request('POST', '/account/model/windows-asr/chat', {'model': 'm'})[0], 400)
+        self.assertEqual(self.request('GET', '/account/model/windows-asr/models')[1], {'data': [{'id': 'Qwen/Qwen3-ASR-1.7B'}]})
+
+    def test_loaded_windows_serves_segment_for_free(self):
+        status, body, headers = self.transcribe()
+        self.assertEqual((status, body['text'], headers['X-Lecture-ASR-Backend']), (200, 'windows text', 'windows-asr'))
+        sent = [x for x in self.private_calls if x[1] == '/v1/audio/transcriptions']
+        self.assertEqual(sent[0][3], self.AUDIO); self.assertEqual(sent[0][2]['Content-Type'], self.MULTIPART['Content-Type'])
+        self.assertEqual(self.calls, [])  # paid provider untouched
+        self.assertEqual(self.a.private_state['inflight'], 0)
+
+    def test_cold_model_warms_up_and_uses_fallback(self):
+        self.health = {'loaded': False, 'busy': False}
+        status, body, headers = self.transcribe()
+        self.assertEqual((status, body['text'], headers['X-Lecture-ASR-Backend'], headers['X-Lecture-ASR-Fallback']), (200, 'fallback text', 'siliconflow', 'loading'))
+        self.assertEqual(self.calls[-1][1], 'https://api.siliconflow.cn/v1/audio/transcriptions')
+        self.assertEqual(self.calls[-1][3], self.AUDIO)
+        self.assertEqual(self.calls[-1][2]['Authorization'], 'Bearer sf-secret')
+        for _ in range(50):
+            if any(x[1] == '/warmup' for x in self.private_calls): break
+            time.sleep(.02)
+        self.assertTrue(any(x[1] == '/warmup' for x in self.private_calls))
+        warmups = sum(x[1] == '/warmup' for x in self.private_calls); self.transcribe(); time.sleep(.05)
+        self.assertEqual(sum(x[1] == '/warmup' for x in self.private_calls), warmups)  # rate limited
+
+    def test_offline_busy_and_backlog_fall_back(self):
+        self.health = None
+        self.assertEqual(self.transcribe()[2]['X-Lecture-ASR-Fallback'], 'offline')
+        self.health = {'loaded': True, 'busy': True}; self.private_status = 503
+        status, body, headers = self.transcribe()
+        self.assertEqual((status, body['text'], headers['X-Lecture-ASR-Fallback']), (200, 'fallback text', 'busy'))
+        self.private_status = 200; self.a.private_state['inflight'] = 2
+        self.assertEqual(self.transcribe()[2]['X-Lecture-ASR-Fallback'], 'backlog')
+        self.a.private_state['inflight'] = 0
+        self.assertEqual(self.transcribe()[2]['X-Lecture-ASR-Backend'], 'windows-asr')
+
+    def test_status_route_reports_and_warms(self):
+        self.health = {'loaded': False, 'busy': False}
+        self.a.private_state['at'] = 0.0
+        out = self.request('POST', '/account/private-asr', {})[1]
+        self.assertEqual((out['configured'], out['state'], out['reachable']), (True, 'loading', True))
+        self.health = None; self.a.private_state['at'] = 0.0
+        self.assertEqual(self.request('GET', '/account/private-asr')[1]['state'], 'offline')
+        self.cookie = ''
+        self.assertEqual(self.request('GET', '/account/private-asr')[0], 401)
+
+
 if __name__ == '__main__': unittest.main()

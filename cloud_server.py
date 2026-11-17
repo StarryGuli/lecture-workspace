@@ -113,6 +113,50 @@ def provider_transport(method, url, headers, body):
         conn.close(); raise
 
 
+PRIVATE_ASR_ID = 'windows-asr'
+PRIVATE_ASR_TRANSCRIBE = '/v1/audio/transcriptions'
+
+
+def private_asr_settings(env=None):
+    """One server-side private ASR upstream, e.g. a GPU laptop reached over Tailscale.
+
+    Only the operator sets it (systemd Environment). Clients can select it by id but can
+    never supply or change its address, so the public-HTTPS rule for providers stays intact.
+    """
+    env = os.environ if env is None else env
+    url = env.get('LECTURE_PRIVATE_ASR_URL', '').strip()
+    if not url: return None
+    u = urllib.parse.urlsplit(url)
+    try:
+        address = ipaddress.ip_address(u.hostname or '')
+        port = u.port
+    except ValueError:
+        raise SystemExit('LECTURE_PRIVATE_ASR_URL must be http://<private IP>:<port>')
+    tailnet = ipaddress.ip_network('100.64.0.0/10')
+    if u.scheme != 'http' or not port or u.path not in ('', '/') or u.query or u.username or not (address.is_private or address in tailnet) or address.is_loopback:
+        raise SystemExit('LECTURE_PRIVATE_ASR_URL must be http://<private or Tailscale IP>:<port> without a path')
+    return {'host': str(address), 'port': port,
+            'name': env.get('LECTURE_PRIVATE_ASR_NAME', 'Windows 本地识别'),
+            'model': env.get('LECTURE_PRIVATE_ASR_MODEL', 'Qwen/Qwen3-ASR-1.7B'),
+            'fallback': env.get('LECTURE_PRIVATE_ASR_FALLBACK', 'siliconflow')}
+
+
+def private_transport(settings, method, path, headers, body, timeout):
+    conn = http.client.HTTPConnection(settings['host'], settings['port'], timeout=timeout)
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        response._gateway_connection = conn
+        return response
+    except Exception:
+        conn.close(); raise
+
+
+def audio_seconds(body):
+    # PCM16 mono 16 kHz WAV inside multipart: a conservative size-based estimate.
+    return max(1.0, len(body or b'') / 32000)
+
+
 def validate_record(p):
     check(isinstance(p, dict) and set(p) == {'schema', 'session', *sync.TABLES} and p['schema'] == 1, 'invalid record schema')
     s = p['session']
@@ -151,12 +195,15 @@ def cipher(data, passphrase, decrypt=False):
 
 
 class Account:
-    def __init__(self, store=None, origin=None, transport=None):
+    def __init__(self, store=None, origin=None, transport=None, private_asr=False, private_fetch=None):
         self.store = pathlib.Path(store or os.environ.get('LECTURE_ACCOUNT_STORE', '/var/lib/lecture-account'))
         self.store.mkdir(parents=True, exist_ok=True); os.chmod(self.store, 0o700)
         self.origin = origin or os.environ.get('LECTURE_ACCOUNT_ORIGIN', ORIGIN)
         self.lock = threading.RLock()
         self.transport = transport or provider_transport
+        self.private_asr = private_asr_settings() if private_asr is False else private_asr
+        self.private_fetch = private_fetch or (lambda *a: private_transport(self.private_asr, *a))
+        self.private_state = {'at': 0.0, 'health': None, 'warmup_at': 0.0, 'inflight': 0}
         self.proxy_slots = threading.BoundedSemaphore(8)
         self.failures = collections.OrderedDict()
         self.global_attempts = collections.deque(maxlen=100)
@@ -247,8 +294,70 @@ class Account:
             public.update(hasKey=bool(c.get('keys', {}).get(p['id'])), serverManaged=True)
             public.update(auth='服务器保管认证信息', network='服务器代理')
             providers.append(public)
+        s = self.private_asr
+        if s:
+            fallback = next((p for p in c.get('providers', []) if p['id'] == s['fallback']), None)
+            providers.append({'id': PRIVATE_ASR_ID, 'name': s['name'], 'baseURL': 'tailscale://' + PRIVATE_ASR_ID,
+                              'transcriptionPath': '/audio/transcriptions', 'models': [s['model']], 'webOnly': True,
+                              'hasKey': True, 'serverManaged': True, 'privateRelay': True, 'isLocalModel': True,
+                              'ownHardware': True, 'asrOnly': True, 'auth': '服务器经 Tailscale 调用，无需密钥', 'network': '服务器代理',
+                              'fallbackProvider': fallback and {'id': fallback['id'], 'name': fallback.get('name', fallback['id'])}})
         return {'config': self.sanitized(c.get('config', {})), 'providers': providers, 'serverManaged': True,
                 'searchReady': bool(c.get('keys', {}).get('search-key'))}
+
+    # Private ASR (Windows GPU over Tailscale). Health is cached briefly so each speech
+    # segment does not pay an extra round trip; any failure falls back to the public provider.
+    def private_health(self, max_age=5.0):
+        st = self.private_state
+        if time.monotonic() - st['at'] < max_age: return st['health']
+        health = None
+        try:
+            r = self.private_fetch('GET', '/health', {}, None, 4)
+            try:
+                if r.status == 200:
+                    value = json.loads(r.read(65536))
+                    if isinstance(value, dict): health = {'loaded': value.get('loaded') is True, 'busy': value.get('busy') is True}
+            finally: r.close()
+        except Exception: health = None
+        st['at'], st['health'] = time.monotonic(), health
+        return health
+
+    def private_warmup(self):
+        st = self.private_state
+        with self.lock:
+            if time.monotonic() - st['warmup_at'] < 60: return False
+            st['warmup_at'] = time.monotonic()
+        def go():
+            try:
+                r = self.private_fetch('POST', '/warmup', {'Content-Length': '0'}, b'', 10); r.read(65536); r.close()
+            except Exception: pass
+            st['at'] = 0.0
+        threading.Thread(target=go, daemon=True).start()
+        return True
+
+    def private_status(self, warm=False):
+        if not self.private_asr: return {'configured': False}
+        h = self.private_health(max_age=2.0)
+        started = warm and h is not None and not h['loaded'] and self.private_warmup()
+        state = 'offline' if h is None else 'ready' if h['loaded'] else 'loading' if (h['busy'] or started or time.monotonic() - self.private_state['warmup_at'] < 240) else 'idle'
+        return {'configured': True, 'name': self.private_asr['name'], 'state': state, 'reachable': h is not None,
+                'loaded': bool(h and h['loaded']), 'warming': started or state == 'loading', 'fallback': self.private_asr['fallback']}
+
+    def private_route(self):
+        """Decide where the next private-ASR segment goes: ('private', None) or (fallback_id, reason)."""
+        s, st = self.private_asr, self.private_state
+        h = self.private_health()
+        if h is None: return s['fallback'], 'offline'
+        if not h['loaded']:
+            self.private_warmup()
+            return s['fallback'], 'loading'
+        with self.lock:
+            if st['inflight'] >= 2: return s['fallback'], 'backlog'
+            st['inflight'] += 1
+        return 'private', None
+
+    def private_done(self):
+        with self.lock: self.private_state['inflight'] = max(0, self.private_state['inflight'] - 1)
 
     def save_provider(self, body):
         check(isinstance(body, dict) and set(body) <= {'provider', 'key'} and isinstance(body.get('provider'), dict))
@@ -262,6 +371,7 @@ class Account:
             return {'saved': True, 'hasKey': bool(key)}
         allowed = {'id', 'name', 'baseURL', 'auth', 'chatPath', 'transcriptionPath', 'headers', 'models', 'network', 'webOnly', 'hasKey', 'serverManaged'}
         check(set(public) <= allowed and isinstance(public.get('id'), str) and ID.fullmatch(public['id']))
+        check(public['id'] != PRIVATE_ASR_ID, 'reserved provider id')
         with self.lock:
             c = self.credentials(); providers = c.setdefault('providers', [])
             old = next((p for p in providers if p['id'] == public['id']), {})
@@ -441,7 +551,7 @@ class Handler(BaseHTTPRequestHandler):
         a = self.server.account
         path = self.path
         match = re.fullmatch(r'/account/model/([A-Za-z0-9][A-Za-z0-9._-]{0,79})/(models|chat|transcribe)', path)
-        routes = {'/account/status', '/account/login', '/account/logout', '/account/bootstrap', '/account/settings', '/account/providers', '/account/search', '/account/records'}
+        routes = {'/account/status', '/account/login', '/account/logout', '/account/bootstrap', '/account/settings', '/account/providers', '/account/search', '/account/records', '/account/private-asr'}
         if path not in routes and not match: raise Failure(404, 'not found')
         self.route = '/account/model/:provider/' + match[2] if match else path
         session = a.session(self.headers.get('Cookie', ''))
@@ -489,6 +599,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/account/providers' and self.command == 'POST': return self.send(200, a.save_provider(self.body(JSON_LIMIT)))
         if path == '/account/records' and self.command in ('GET', 'POST'):
             return self.send(200, a.records(None if self.command == 'GET' else self.body(8 * JSON_LIMIT)))
+        if path == '/account/private-asr' and self.command in ('GET', 'POST'):
+            if self.command == 'POST': self.body(16384)
+            return self.send(200, a.private_status(warm=self.command == 'POST'))
+        if match and match[1] == PRIVATE_ASR_ID:
+            if not a.private_asr: raise Failure(404, 'provider not found')
+            if match[2] == 'models' and self.command == 'GET': return self.send(200, {'data': [{'id': a.private_asr['model']}]})
+            if match[2] != 'transcribe' or self.command != 'POST': raise Failure(400, 'speech recognition only')
+            return self.private_transcribe()
         if match and ((match[2] == 'models' and self.command == 'GET') or (match[2] != 'models' and self.command == 'POST')):
             if not a.proxy_slots.acquire(False): raise Failure(503, 'provider busy')
             try:
@@ -522,6 +640,44 @@ class Handler(BaseHTTPRequestHandler):
             finally: a.proxy_slots.release()
         raise Failure(405, 'method not allowed')
 
+    def private_transcribe(self):
+        a = self.server.account
+        ctype = self.headers.get('Content-Type', '')
+        check(self.headers.get_content_type() == 'multipart/form-data' and self.headers.get_param('boundary') and '\r' not in ctype and '\n' not in ctype, 'multipart required')
+        if not a.proxy_slots.acquire(False): raise Failure(503, 'provider busy')
+        try:
+            data = self.body(AUDIO_LIMIT, True)
+            target, reason = a.private_route()
+            if target == 'private':
+                try:
+                    seconds = audio_seconds(data)
+                    # Measured warm speed is ~0.6x real time plus relay transfer; leave room for fallback.
+                    response = a.private_fetch('POST', PRIVATE_ASR_TRANSCRIBE, {'Content-Type': ctype}, data, min(420, 10 + 0.8 * seconds))
+                    try:
+                        if 200 <= response.status < 300:
+                            return self.forward(response, {'X-Lecture-ASR-Backend': PRIVATE_ASR_ID})
+                        reason = 'busy' if response.status == 503 else 'error'
+                    finally:
+                        response.close()
+                        conn = getattr(response, '_gateway_connection', None)
+                        if conn: conn.close()
+                except Failure:
+                    if self.started_response: raise
+                    reason = 'error'
+                except (OSError, http.client.HTTPException):
+                    reason = 'timeout'
+                finally:
+                    a.private_done()
+                a.private_state['at'] = 0.0  # re-check health before the next segment
+                target = a.private_asr['fallback']
+            response = a.upstream('POST', target, 'transcribe', data, ctype)
+            try: return self.forward(response, {'X-Lecture-ASR-Backend': target, 'X-Lecture-ASR-Fallback': reason})
+            finally:
+                response.close()
+                conn = getattr(response, '_gateway_connection', None)
+                if conn: conn.close()
+        finally: a.proxy_slots.release()
+
     def brave(self, url, query, key):
         # Use the injected transport as for provider tests. Production transport
         # intentionally excludes arbitrary queries, so handle fixed Brave query here.
@@ -535,7 +691,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             conn.close(); raise
 
-    def forward(self, response):
+    def forward(self, response, headers=None):
         if not 200 <= response.status < 300:
             # Keep actionable billing/rate-limit status without exposing upstream bodies.
             if response.status in (402, 429):
@@ -560,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(data) > 8 * JSON_LIMIT: raise Failure(502, 'provider response too large')
         try: value = json.loads(data)
         except ValueError: raise Failure(502, 'invalid provider response')
-        return self.send(200, self.server.account.sanitized(value))
+        return self.send(200, self.server.account.sanitized(value), headers)
 
 
 def main():

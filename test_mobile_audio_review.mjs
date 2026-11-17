@@ -41,8 +41,8 @@ test('no transcript retention or disabled review incurs no extra model requests'
  const f=await fixture();f.runtime.model.transcribe=async()=>{throw Error('must not call');};
  for(const live of [{retainTranscript:false},{finalAudioReview:false}])assert.equal((await f.runtime.reviewLiveAudio('lesson',{config:{...f.config,live}},()=>{})).skipped,true);
 });
-test('lesson estimate includes the extra full-audio pass even when silence filtering is enabled',async()=>{
- const f=await fixture();const estimate=await f.runtime.api('/api/lesson-estimate',{config:f.config,plan:{minutes:45,mode:'record'}});
+test('lesson estimate includes the opt-in full-audio pass even when silence filtering is enabled',async()=>{
+ const f=await fixture();f.config.live.finalAudioReview=true;const estimate=await f.runtime.api('/api/lesson-estimate',{config:f.config,plan:{minutes:45,mode:'record'}});
  const row=estimate.rows.find(r=>r.label==='完整原音复核（含静音）');assert.equal(row.requests,5);assert.equal(row.amount,2700*.00022);
  f.config.live.finalAudioReview=false;
  const disabled=await f.runtime.api('/api/lesson-estimate',{config:f.config,plan:{minutes:45,mode:'record'}});assert.ok(!disabled.rows.some(r=>r.label.includes('完整原音复核')));

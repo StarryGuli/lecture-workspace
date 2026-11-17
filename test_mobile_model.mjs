@@ -42,3 +42,20 @@ test('clean EOF without completion marker is an interrupted stream',async()=>{
 test('successful response remains usable',async()=>{
  assert.deepEqual(await request(client(async()=>new Response('{"choices":[]}'))),{choices:[]});
 });
+
+// Windows GPU relay: own hardware is an explicit zero; a gateway fallback is billed at the fallback's price.
+test('relayed Windows ASR records zero cost, and a fallback segment is billed to the fallback platform',async()=>{
+ const providers=[{id:'windows-asr',serverManaged:true,privateRelay:true,ownHardware:true,baseURL:'tailscale://windows-asr',auth:'服务器经 Tailscale 调用，无需密钥'},{id:'siliconflow',serverManaged:true,baseURL:'https://api.siliconflow.cn/v1',auth:'x'}];
+ assert.equal(quote({asr:{model:'Qwen/Qwen3-ASR-1.7B'}},'asr',providers[0]).audioPerSecond,0);
+ assert.equal(quote({text:{model:'m'}},'text',providers[0]),null);
+ const rows=[];let backend='windows-asr',reason=null;
+ const c=new ModelClient({fetcher:async()=>new Response('{"text":"好"}',{headers:{'X-Lecture-ASR-Backend':backend,...(reason?{'X-Lecture-ASR-Fallback':reason}:{})}}),providers:async()=>providers,account:{require(){},csrfToken:'t'},keyring:{key:async()=>''},store:{put:async(_,row)=>rows.push(row)}});
+ const asr={_session:'s1',asr:{providerId:'windows-asr',model:'Qwen/Qwen3-ASR-1.7B'}};
+ assert.equal(await c.transcribe(asr,new Blob(['x']),10),'好');
+ assert.deepEqual([rows[0].provider,rows[0].cost],['windows-asr',0]);
+ backend='siliconflow';reason='loading';
+ await c.transcribe(asr,new Blob(['x']),10);
+ assert.equal(rows[1].provider,'siliconflow');assert.equal(rows[1].requestedProvider,'windows-asr');
+ assert.ok(Math.abs(rows[1].cost-.0022)<1e-9);
+ assert.deepEqual([c.lastBackend.backend,c.lastBackend.reason],['siliconflow','loading']);
+});

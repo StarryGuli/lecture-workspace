@@ -11,6 +11,10 @@ Environment=LECTURE_ACCOUNT_STORE=/var/lib/lecture-account
 Environment=LECTURE_ACCOUNT_HOST=127.0.0.1
 Environment=LECTURE_ACCOUNT_PORT=8792
 Environment=LECTURE_ACCOUNT_ORIGIN=https://lecture.example.com
+# Windows GPU laptop (Qwen3-ASR) over Tailscale; the gateway falls back to the provider below.
+Environment=LECTURE_PRIVATE_ASR_URL=http://100.100.100.100:11500
+Environment="LECTURE_PRIVATE_ASR_NAME=Windows 本地识别（Qwen3-ASR）"
+Environment=LECTURE_PRIVATE_ASR_FALLBACK=siliconflow
 ExecStart=/usr/bin/python3 /opt/lecture-account/cloud_server.py serve
 Restart=on-failure
 RestartSec=3

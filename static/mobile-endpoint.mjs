@@ -1,12 +1,15 @@
 // Speech endpoints only. Elapsed recording time never causes an ASR submission.
 export class SpeechEndpoint {
-  constructor({pauseSeconds=3}={}) {this.pause=Math.max(.35,Number(pauseSeconds)||3);this.reset();}
+  // Still pause-driven only: after a long utterance (25 s of speech) a shorter real pause (1.2 s)
+  // also ends it, so long monologues reach ASR/question detection sooner. No pause, no cut.
+  constructor({pauseSeconds=3}={}) {this.pause=Math.max(.35,Number(pauseSeconds)||3);this.longPause=Math.min(this.pause,1.2);this.reset();}
   reset(){this.position=0;this.voiced=0;this.quiet=0;this.inSpeech=false;}
   push(probability,frames){
     this.position+=frames;
     if(probability>=.35){this.voiced+=frames;this.quiet=0;this.inSpeech=true;}
     else if(this.inSpeech)this.quiet+=frames;
-    if(this.inSpeech&&this.voiced>=3200&&this.quiet>=this.pause*16000){
+    const pause=this.voiced>=25*16000?this.longPause:this.pause;
+    if(this.inSpeech&&this.voiced>=3200&&this.quiet>=pause*16000){
       this.inSpeech=false;this.voiced=0;this.quiet=0;
       return this.position;
     }

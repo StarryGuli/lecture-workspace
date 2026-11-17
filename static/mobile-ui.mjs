@@ -5,9 +5,11 @@ const $=id=>document.getElementById(id);
 const runtime=await createMobileRuntime({detector:async pcm=>{const {detectSpeech}=await import('./mobile-vad.mjs');return detectSpeech(pcm);}});
 window.LectureMobile=runtime;
 const error=(e)=>{const node=$('mobileNotice');if(node)node.textContent=e.message||String(e);};
-// Native details keeps the menu usable before the mobile runtime boots.
+// The "more" menu closes on choice / outside click / Esc in app.js (shared with the Mac version);
+// this early copy only covers the moments before app.js has loaded.
 const workspaceMenu=$('workspaceMenu');
-if(workspaceMenu){
+if(workspaceMenu&&!window.__menuCloseInstalled){
+ window.__menuCloseInstalled=true;
  workspaceMenu.addEventListener('click',e=>{
   if(e.target.closest('input,select,textarea,label'))return;
   if(e.target.closest('#workspaceMenuPanel button,#workspaceMenuPanel a[href]'))workspaceMenu.open=false;
@@ -59,6 +61,25 @@ if(runtime.account.enabled){
  new MutationObserver(adapt).observe(document.querySelector('main')||document.body,{childList:true,subtree:true});adapt();
 }
 
+// Windows GPU recognition through the account gateway: warm it when recording starts,
+// show its state, and say when a segment used the paid fallback instead.
+const privateASR=runtime.account.enabled&&(runtime.account.providers||[]).find(p=>p.privateRelay);
+if(privateASR){
+ const line=document.createElement('span');line.id='privateAsrState';$('mobileSpeechState')?.after(line);
+ const labels={ready:'已就绪',loading:'正在加载模型（约 1–3 分钟，期间改用硅基流动）',idle:'空闲，开始录音时自动加载',offline:'离线，改用硅基流动'};
+ const selected=()=>{try{return JSON.parse(localStorage.getItem('speakless-web-config')||'{}').asr?.providerId===privateASR.id;}catch{return false;}};
+ const refresh=async(warm=false)=>{try{const s=await runtime.account.request('private-asr',{method:warm?'POST':'GET',body:warm?{}:undefined});line.textContent=`${privateASR.name}：${labels[s.state]||s.state}`;return s;}catch{line.textContent=`${privateASR.name}：状态未知`;}};
+ refresh();
+ document.getElementById('start')?.addEventListener('click',()=>{if(selected())refresh(true);},{capture:true});
+ let lastBackend=null;
+ document.addEventListener('lecture-asr-backend',e=>{
+  const {backend,reason}=e.detail||{};if(!backend||backend===lastBackend)return;lastBackend=backend;
+  const why={loading:'Windows 模型加载中',offline:'Windows 离线',busy:'Windows 显卡被占用',backlog:'Windows 排队过长',timeout:'Windows 响应超时',error:'Windows 识别出错'}[reason]||'Windows 不可用';
+  const message=backend===privateASR.id?`已使用 ${privateASR.name}，不产生平台费用`:`${why}，本段改用 ${privateASR.fallbackProvider?.name||backend}（按量计费）`;
+  line.textContent=`${privateASR.name}：${backend===privateASR.id?labels.ready:why+'，暂用备用平台'}`;
+  document.dispatchEvent(new CustomEvent('lecture-runtime-notice',{detail:message}));
+ });
+}
 // Ask only on a user gesture; a refusal never prevents local recording.
 document.getElementById('start')?.addEventListener('click',()=>{navigator.storage?.persist?.().then(updateStorage).catch(()=>{});},{capture:true});
 if('serviceWorker' in navigator){try{const registration=await earlySW;if(!registration)throw Error('离线注册未完成');await navigator.serviceWorker.ready;const update=()=>{if(registration.waiting){$('mobileUpdateButton').hidden=false;$('mobileUpdateButton').onclick=()=>{if(document.documentElement.dataset.recording==='true'||document.querySelector('.save-editor')||document.querySelector('.title-editor.dirty')){error(Error('请结束录音并保存编辑后再更新'));return;}registration.waiting.postMessage({type:'ACTIVATE'});};}};const watch=()=>registration.installing?.addEventListener('statechange',update);registration.addEventListener('updatefound',watch);watch();update();let started=false;navigator.serviceWorker.addEventListener('controllerchange',()=>{if(started&&document.documentElement.dataset.recording!=='true')location.reload();});if(!navigator.serviceWorker.controller)await new Promise(resolve=>{const timer=setTimeout(resolve,5000);navigator.serviceWorker.addEventListener('controllerchange',()=>{clearTimeout(timer);resolve();},{once:true});});started=true;}catch(e){error(Error('离线缓存未启用；本设备录音仍会保存，请保持页面打开。'));}}

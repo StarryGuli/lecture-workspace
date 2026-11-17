@@ -27,3 +27,18 @@ test('meeting mode sends after a short natural pause without waiting for the cla
  for(let i=0;i<18;i++)assert.equal(e.push(.01,512),null);
  assert.equal(e.push(.01,512),(50+19)*512);
 });
+
+test('a long utterance ends on a shorter real pause; continuous speech is still never cut',()=>{
+ const e=new SpeechEndpoint({pauseSeconds:3});const step=1600;let end=null;
+ for(let i=0;i<300&&end===null;i++)end=e.push(.9,step);          // 30 s of speech, no pause
+ assert.equal(end,null);
+ for(let i=0;i<8&&end===null;i++)end=e.push(.05,step);           // 0.8 s breath: not enough
+ assert.equal(end,null);
+ for(let i=0;i<30&&end===null;i++)end=e.push(.9,step);
+ for(let i=0;i<20&&end===null;i++)end=e.push(.05,step);          // 1.2 s pause ends it
+ assert.ok(end!==null);
+ const short=new SpeechEndpoint({pauseSeconds:3});let cut=null;
+ for(let i=0;i<50;i++)short.push(.9,step);                          // 5 s utterance
+ for(let i=0;i<20&&cut===null;i++)cut=short.push(.05,step);       // 2 s pause: short utterances keep the 3 s rule
+ assert.equal(cut,null);
+});

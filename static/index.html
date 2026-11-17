@@ -8,6 +8,7 @@
     />
     <meta name="theme-color" content="#f7f8fa" />
     <title>记录工作台 · 记录与听课</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
@@ -89,8 +90,8 @@
             ><button id="pause" hidden>暂停</button
             ><button id="mark" hidden>打点</button
             ><button id="stop" title="结束录音并保存" class="primary" hidden>结束</button>
-            <button id="retryAnalysis" data-action="retryAnalysis" title="复用已有转录，重试失败的分析或整理">重试失败分析</button>
-            <button id="retranscribeAudio" data-action="transcribe" title="使用本设备保存的完整录音重新识别，确认费用后才发送模型" hidden>重新识别录音</button>
+            <button id="retryAnalysis" data-action="retryAnalysis" title="不重新识别：用已有原文，重做失败的校订、判题、答题和整理。只在本记录有失败片段时出现。">重新分析失败片段</button>
+            <button id="retranscribeAudio" data-action="transcribe" title="用本设备保存的完整原音重新做语音识别（ASR）；先预览静音阈值和费用，确认后才发送。" hidden>重新识别（ASR）</button>
             <button id="resumeRecording" data-action="resumeRecording" hidden>恢复上次录音</button>
             <button id="returnRecording" data-action="returnRecording" hidden>录音中 · 返回当前录音</button>
             <button id="sendCurrent" data-action="sendCurrent" title="主动保存并识别当前已录音片段" hidden>发送当前段</button>
@@ -211,7 +212,7 @@
               step="0.05"
               value="0.35"
           /></label>
-          <label>重新出声前补送（秒）<input id="silencePreRoll" type="number" min="0.15" max="3" step="0.05" value="1"></label>
+          <label>重新出声前补送（秒）<input id="silencePreRoll" type="number" min="0.15" max="3" step="0.05" value="3"></label>
           <p class="hint">
             低于阈值后先保留上面设置的等待时长，再跳过后续静音；恢复时补送前面的声音。原音和计时一直继续。自动模式最高使用 −55 dBFS 的保守阈值；手动模式可自行调整。下降点不等于人声边界，建议回听轻声。
           </p>

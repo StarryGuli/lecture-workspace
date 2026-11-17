@@ -5,7 +5,7 @@
 - 排除 data/、qa/、旧预览图、历史实测及内部设计报告，不附带录音、课堂文本、密钥、数据库和缓存。
 - 原始域名 → lecture.example.com（请准备自己的 HTTPS 域名及证书）。
 - 原始 SSH 地址 → root@203.0.113.10（文档专用地址，请替换为自己的主机）。
-- Tailscale 测试地址 → 100.100.100.100（仅测试夹具，实际地址自行配置）。
+- Tailscale 地址 → 100.100.100.100（测试夹具，以及 `deploy/lecture-account.service` 中可选的自有 GPU 识别上游 `LECTURE_PRIVATE_ASR_URL`；实际地址自行配置）。
 - 个人源码绝对路径 → /path/to/lecture-workspace。语料采集脚本从当前用户的 Desktop / Downloads 查找，只在显式运行后读取。
 - API key：通过本机设置或 SILICONFLOW_API_KEY 提供自己的服务凭证；不附带额度。
 - 项目整体未授予开源许可；第三方许可保留原文。

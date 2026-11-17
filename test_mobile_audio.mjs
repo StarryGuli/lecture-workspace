@@ -152,3 +152,16 @@ test('analysis curve, cliffs, energy quality and speech protection match Python'
   const expected = JSON.parse(py.stdout), actual = analyzePCM(pcm, cfg, {speech});
   for (const key of ['curve', 'cliff', 'cliffs', 'recommendedDb', 'quality', 'distribution', 'speechProtection', 'ranges', 'skipped', 'sentSeconds']) assert.deepEqual(actual[key], expected[key], key);
 });
+
+// Safari Private Browsing refuses Blobs in IndexedDB; the store must keep the bytes anyway.
+test('blob values survive as packed bytes and come back as Blobs',async()=>{
+ const {packBlobs,unpackBlobs}=await import('./static/mobile-store.mjs');
+ const blob=new Blob([new Uint8Array([1,2,3,250])],{type:'audio/wav'});
+ const packed=await packBlobs({id:'c1',seq:0,blob,nested:{list:[blob]}});
+ assert.ok(packed.blob.__lectureBlob instanceof ArrayBuffer);assert.ok(!(packed.blob instanceof Blob));
+ const back=unpackBlobs(structuredClone(packed));
+ assert.ok(back.blob instanceof Blob);assert.equal(back.blob.type,'audio/wav');
+ assert.deepEqual([...new Uint8Array(await back.blob.arrayBuffer())],[1,2,3,250]);
+ assert.ok(back.nested.list[0] instanceof Blob);
+ const plain={id:'x',text:'no blobs'};assert.equal(unpackBlobs(plain),plain);
+});

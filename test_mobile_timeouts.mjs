@@ -25,3 +25,10 @@ test('successful local inference warms subsequent requests without forcing an ac
  await client.transcribe(automatic,wavFromPCM(new Int16Array(32000)),2);assert.equal(client.lastTimeout.seconds,147);assert.equal(client.lastTimeout.cold,true);
  await client.transcribe(automatic,wavFromPCM(new Int16Array(64000)),4);assert.equal(client.lastTimeout.seconds,29);assert.equal(client.lastTimeout.cold,false);
 });
+
+test('gateway-relayed Windows ASR waits for relay plus one fallback, never a cold-load allowance',()=>{
+ const provider={privateRelay:true,serverManaged:true,auth:'x'};
+ assert.equal(requestWait({config:{live:{timeoutMode:'auto'}},role:'asr',provider,seconds:10}),55);
+ assert.equal(requestWait({config:{live:{timeoutMode:'manual'}},role:'asr',provider,seconds:10,warm:false}),55);
+ assert.equal(requestWait({config:{live:{timeoutMode:'auto'}},role:'asr',provider,seconds:900}),600);
+});

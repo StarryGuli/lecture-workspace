@@ -1,5 +1,6 @@
 "use strict";
 document.addEventListener('lecture-audio-export-status',e=>tell(e.detail));
+document.addEventListener('lecture-runtime-notice',e=>tell(e.detail));
 let currentTimeoutBudget=null;
 document.addEventListener('lecture-timeout-budget',e=>{if(e.detail.sid===current){currentTimeoutBudget=e.detail;updatePipelineStatus();}});
 // Keep the work area and fixed recorder tied to the actual browser viewport.
@@ -156,6 +157,7 @@ let recording = false,
   reviewSession = null,
   effectiveThreshold = -80,
   lastInputDb = -96,
+  lastLampPaint = 0,
   belowThresholdSeconds = 0,
   lastGateResult = null,
   transcriptScroll = new Map(),
@@ -240,7 +242,7 @@ function applyAppearance(save = false) {
     appearance === "dark" || (appearance === "system" && systemTheme.matches);
   document.documentElement.dataset.theme = dark ? "night" : "studio";
   document.querySelector('meta[name="theme-color"]').content = dark
-    ? "#171a22"
+    ? "#000000"
     : "#f7f8fa";
   if (save)
     localStorage.setItem(
@@ -256,10 +258,32 @@ systemTheme.addEventListener("change", () => {
   if (appearance === "system") applyAppearance();
 });
 applyAppearance();
+// Status is a transient notice: info fades after a few seconds, errors stay until the next message or a tap.
+let statusTimer = 0;
 function tell(s, error = false) {
-  $("status").textContent = s;
-  $("status").classList.toggle("error", error);
+  const el = $("status");
+  el.textContent = s;
+  el.classList.toggle("error", error);
+  clearTimeout(statusTimer);
+  const show = !!String(s || "").trim() && s !== "准备就绪";
+  el.dataset.visible = String(show);
+  if (show && !error) statusTimer = setTimeout(() => { el.dataset.visible = "false"; }, Math.min(9000, 3500 + String(s).length * 60));
 }
+$("status").addEventListener("click", () => { $("status").dataset.visible = "false"; });
+// The "more" menu closes after a choice, on an outside click and on Esc (Mac and phone builds alike).
+(() => {
+  const menu = $("workspaceMenu");
+  if (!menu || window.__menuCloseInstalled) return;
+  window.__menuCloseInstalled = true;
+  menu.addEventListener("click", (e) => {
+    if (e.target.closest("input,select,textarea,label")) return;
+    if (e.target.closest("#workspaceMenuPanel button,#workspaceMenuPanel a[href]")) menu.open = false;
+  });
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) menu.open = false; });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && menu.open) { menu.open = false; menu.querySelector("summary").focus(); }
+  });
+})();
 async function guard(f) {
   try {
     return await f();
@@ -293,7 +317,21 @@ function failedTaskKey(path,b){return 'failed-analysis:'+path+':'+(b.seq??b.sour
 async function rememberFailedTask(path,body,error){
   if(!/\/(live|realtime-transcribe|live-finalize|organize|review-live-audio|transcribe|question-followup)$/.test(path))return;
   const id=failedTaskKey(path,body),value={id,path,body:structuredClone(body),error:String(error),session:path.split('/')[3]};
-  failedAnalysisTasks.set(id,value);if(window.LectureMobile?.store)await window.LectureMobile.store.put('meta',value);
+  failedAnalysisTasks.set(id,value);if(window.LectureMobile?.store)await window.LectureMobile.store.put('meta',value);storedFailedSessions.add(value.session);
+}
+// The retry button is shown only when this record actually has failed analysis work.
+let storedFailedSessions=new Set();
+async function refreshStoredFailures(){
+  if(!window.LectureMobile?.store)return;
+  const sessions=new Set();
+  try{for(const task of await window.LectureMobile.store.all('meta'))if(String(task.id).startsWith('failed-analysis:'))sessions.add(task.session);}catch{return;}
+  storedFailedSessions=sessions;if(typeof updateControls==='function')updateControls();
+}
+function hasFailedAnalysis(sid=current){
+  if(!sid)return false;
+  if([...failedAnalysisTasks.values()].some(t=>t.session===sid)||storedFailedSessions.has(sid))return true;
+  const latest=new Map();for(const r of detailData?.revisions||[])if(['live','corrected-transcript'].includes(r.kind))latest.set(r.kind+':'+(r.content.seq??r.content.sequences?.[0]),r);
+  return [...latest.values()].some(r=>r.content.analysisError||r.content.analysis?.answerError||r.content.correctionState==='failed');
 }
 function retryableAnalysisError(message){
   const text=String(message);
@@ -314,7 +352,7 @@ async function jobs(path, b, onProgress) {
           if(j.status==='done'){
             const failure=j.result?.analysisError||j.result?.analysis?.answerError||(j.result?.correction?.correctionState==='failed'&&j.result.correction.correctionError)||(j.result?.failedCorrections&&(j.result.correctionError||'全文校订未完成'));
             if(failure){terminalFailure=true;const e=Error(failure);e.result=j.result;throw e;}
-            const key=failedTaskKey(path,b);failedAnalysisTasks.delete(key);if(window.LectureMobile?.store)await window.LectureMobile.store.delete('meta',key);
+            const key=failedTaskKey(path,b);failedAnalysisTasks.delete(key);if(window.LectureMobile?.store)await window.LectureMobile.store.delete('meta',key);refreshStoredFailures();
             return j.result;
           }
         }
@@ -453,8 +491,11 @@ function isSiliconFlow(provider) {
   if(!provider)return false;
   try{return ['api.siliconflow.cn','api.siliconflow.com.cn'].includes(new URL(provider.baseURL).hostname);}catch{return false;}
 }
+// Speech-only providers (e.g. the Windows GPU relay) are offered only for recognition.
+function providersFor(role){return (boot.providers||[]).filter(p=>role==='asr'||!p.asrOnly);}
 function quickPriceText(role,providerId,model) {
   const provider=boot.providers?.find(p=>p.id===providerId);
+  if(provider?.ownHardware&&role==='asr')return '自有设备 · 无平台费用；不可用时自动改用备用平台（按量计费）';
   if(isSiliconFlow(provider)&&role==='asr'&&model==='Qwen/Qwen3-ASR-1.7B')return 'CNY 0.00022 / 秒 · 0.792 / 音频小时';
   if(isSiliconFlow(provider)&&SILICONFLOW_FREE_MODELS[role]?.includes(model))return '免费 · 硅基流动公开价格页';
   const c=runtimeConfig(),price=c[role]?.providerId===providerId&&c[role]?.model===model?boot.priceQuotes?.[role]:null;
@@ -471,7 +512,7 @@ function quickModelsMarkup() {
   const c=runtimeConfig();
   return `<details class="quick-models"><summary>调整当前模型</summary><p class="hint">保存后用于后续请求；录音中也可更改。已发送及已排队请求保留各自配置快照。</p><div class="quick-model-grid">${[['asr','语音识别'],['correction','实时校订'],['text','文本 / 整理']].map(([role,label])=>{
     const provider=boot.providers?.find(p=>p.id===c[role]?.providerId);
-    return `<fieldset><legend>${label}</legend><label>平台<select id="quick-${role}-provider" data-quick-provider="${role}">${(boot.providers||[]).map(p=>`<option value="${esc(p.id)}" ${p.id===provider?.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>模型 ID<input id="quick-${role}-model" data-quick-model="${role}" list="quick-${role}-models" value="${esc(c[role]?.model||'')}"></label><datalist id="quick-${role}-models">${modelListMarkup(provider)}</datalist><p class="quick-model-price" data-quick-price="${role}">${esc(quickPriceText(role,provider?.id,c[role]?.model||''))}</p><div data-quick-free-list="${role}">${quickFreeModelsMarkup(role,provider)}</div></fieldset>`;
+    return `<fieldset><legend>${label}</legend><label>平台<select id="quick-${role}-provider" data-quick-provider="${role}">${providersFor(role).map(p=>`<option value="${esc(p.id)}" ${p.id===provider?.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><label>模型 ID<input id="quick-${role}-model" data-quick-model="${role}" list="quick-${role}-models" value="${esc(c[role]?.model||'')}"></label><datalist id="quick-${role}-models">${modelListMarkup(provider)}</datalist><p class="quick-model-price" data-quick-price="${role}">${esc(quickPriceText(role,provider?.id,c[role]?.model||''))}</p><div data-quick-free-list="${role}">${quickFreeModelsMarkup(role,provider)}</div></fieldset>`;
   }).join('')}</div><button data-action="saveQuickModels">保存模型</button></details>`;
 }
 function modelListMarkup(provider) {
@@ -504,6 +545,16 @@ function wireQuickFreeModels() {
     updateQuickModelPrice(role);
   });
 }
+// Where a request really ran: own hardware (local) or an online platform; fallbacks say why.
+const FALLBACK_REASONS={loading:'Windows 模型加载中',offline:'Windows 离线',busy:'Windows 显卡被占用',backlog:'Windows 排队过长',timeout:'Windows 响应超时',error:'Windows 识别出错'};
+function providerLabel(id){
+  const p=boot?.providers?.find(x=>x.id===id);
+  if(!p)return id||'未知平台';
+  return `${p.name} · ${p.ownHardware||p.privateRelay?'本地 GPU，免费':p.auth==='No key (local server)'||p.isLocalModel?'本地':'在线'}`;
+}
+const ROLE_LABELS={asr:'语音识别',correction:'实时校订',text:'分析 / 答题',search:'联网搜索'};
+let lastAsrBackend=null;
+document.addEventListener('lecture-asr-backend',e=>{lastAsrBackend={...e.detail,at:Date.now()};if(typeof updatePipelineStatus==='function')updatePipelineStatus();});
 function usageMetrics(u) {
   const money=Object.entries(u?.amounts||{}).map(([c,n])=>`${c} ${n.toFixed(6)}`).join(' / ') || (u?.requests?'单价或用量待补全':'尚无请求');
   return [u?`${(u.audioSeconds||0).toFixed(1)} s`:'—',u?(u.inputTokens||0).toLocaleString():'—',u?(u.outputTokens||0).toLocaleString():'—',u?.inputTokens>0?`${((u.cachedTokens||0)/u.inputTokens*100).toFixed(1)}%`:'—',u?money:'—'];
@@ -513,7 +564,7 @@ function compactUsageMarkup() {
 }
 function sessionSetupMarkup() {
   const c=runtimeConfig();
-  const provider=role=>boot.providers?.find(p=>p.id===c[role]?.providerId)?.name || c[role]?.providerId || "未选择平台";
+  const provider=role=>{const p=boot.providers?.find(p=>p.id===c[role]?.providerId);return p?providerLabel(p.id):c[role]?.providerId || "未选择平台";};
   const chip=(role,label)=>`<span class="runtime-model"><small>${label}</small><strong>${esc(c[role]?.model || "未选择模型")}</strong><span>${esc(provider(role))}</span></span>`;
   const role=recordingPage || view;
   const same=c.live?.correctTranscript!==false && role!=="record" && c.correction?.providerId===c.text?.providerId && c.correction?.model===c.text?.model;
@@ -546,7 +597,15 @@ function scheduleLessonEstimate() {
 }
 function updatePipelineStatus() {
   updateCaptureStatus();
-  const node=$("pipelineStatus");if(!node)return;
+  const real=$("pipelineStatus");if(!real)return;
+  // Build the text off-DOM and write only real changes (no layout churn every 2 s).
+  const node={textContent:'',dataset:{warning:'false'}};
+  try{pipelineStatusInto(node);}finally{
+    if(real.textContent!==node.textContent)real.textContent=node.textContent;
+    if(real.dataset.warning!==node.dataset.warning)real.dataset.warning=node.dataset.warning;
+  }
+}
+function pipelineStatusInto(node) {
   const jobs=[...pipelineJobs.values()],active=jobs.filter(j=>!['done','error'].includes(j.stage));
   const failed=jobs.filter(j=>j.stage==='error');
   if(starting&&!recording){node.textContent="正在准备麦克风，请确认浏览器授权；尚未开始收音。";return;}
@@ -562,6 +621,7 @@ function updatePipelineStatus() {
     state=`${labels[first.stage]||'处理中'} ${Math.max(0,Math.floor((Date.now()-first.since)/1000))}s · ${active.length} 段待完成。`;
   } else state=recording?"正在收音，等待停顿或发送间隔。":finishing?(detailData?.hasAudio?"原音已保存，正在收尾。":"正在保存原音。"):"本次处理已结束。";
   node.textContent=`${state} 已收音 ${clock(elapsed)} · 原音已上传至 ${clock(savedAudioEnd)} · 最近返回片段至 ${clock(returnedAudioEnd)}${failed.length?` · ${failed.length} 段失败，原音保留；${/timed? ?out|timeout/i.test(failed.at(-1).error||'')?'模型响应超时，可课后重试':String(failed.at(-1).error||'可课后重新识别').slice(0,120)}`:''}`;
+  if(lastAsrBackend?.sid===current&&Date.now()-lastAsrBackend.at<10*60000)node.textContent+=` · 最近一段识别：${providerLabel(lastAsrBackend.backend)}${lastAsrBackend.backend!==lastAsrBackend.provider?`（${FALLBACK_REASONS[lastAsrBackend.reason]||'所选平台不可用'}，已回退）`:''}`;
   node.dataset.warning=String(stale||failed.length>0);
   if(currentTimeoutBudget?.sid===current&&active.length)node.textContent+=' · 最近'+({asr:'识别',correction:'校订',text:'分析'}[currentTimeoutBudget.role]||'模型')+'请求上限 '+currentTimeoutBudget.seconds+' 秒'+(currentTimeoutBudget.cold?'（含模型加载余量）':'');
 }
@@ -702,9 +762,10 @@ function captureStatusState() {
   if(Date.now()-lastAudioAt>2500)return {kind:"warning",title:"收音中断",detail:"没有收到新的麦克风音频，请检查设备或权限。"};
   if(modelPaused)return {kind:"paused",title:"模型输入已暂停",detail:"原始录音和计时继续，暂停期间不会自动补发。"};
   const level=`当前 ${lastInputDb.toFixed(1)} / 阈值 ${effectiveThreshold} dBFS`;
-  if(options.silence.enabled && lastInputDb<effectiveThreshold){
-    const wait=options.silence.minSilence;
-    return {kind:"gated",title:belowThresholdSeconds>=wait?"低音量 · 模型输入待机":"低于阈值 · 等待静音判定",detail:level+" · 原音和计时继续；实际跳过量以本段判定为准。"};
+  // Same rule as the upload gate: stay "on" through short pauses; standby only after the full hold.
+  const wait=options.silence.minSilence;
+  if(options.silence.enabled && lastInputDb<effectiveThreshold && belowThresholdSeconds>=wait){
+    return {kind:"gated",title:"静音待机 · 暂不上传",detail:level+` · 已连续低于阈值 ${belowThresholdSeconds.toFixed(1)} 秒；录音和计时继续，重新出声时连同前 ${options.silence.preRoll??1} 秒一起上传。`};
   }
   return {kind:"active",title:"正在收音",detail:level+(liveSession?" · 声音保存后进入实时处理。":" · 原音完整保存，结束后再整理。")};
 }
@@ -999,13 +1060,13 @@ function effectiveNetwork(p) {
 function correctionModelCard(c) {
   const p = boot.providers.find(p => p.id === c.providerId);
   const noThinking = new URL(p?.baseURL || "http://localhost").hostname === "api.siliconflow.cn" && /^(Pro\/)?deepseek-ai\//.test(c.model);
-  return `<section class="panel settings-section"><div class="row spread"><h2>实时逐字稿校订</h2><span class="badge">${p?.hasKey ? "已配置密钥" : "未配置密钥"}</span></div><p class="hint">每句段自动修正错字、术语和断句；不概括、不省略。与内容分析可使用不同平台和模型。</p><label class="check"><input type="checkbox" data-config="live.correctTranscript" ${options.live.correctTranscript !== false ? "checked" : ""}>启用自动校订（默认开启）</label><div class="form-grid"><label>平台<select data-config="correction.providerId">${boot.providers.map(p => `<option value="${esc(p.id)}" ${p.id === c.providerId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label><label>模型 ID<input data-config="correction.model" list="correctionModels" value="${esc(c.model)}"><button class="link-like" data-action="fetchModels" data-role="correction">获取平台模型列表</button><datalist id="correctionModels">${(p?.models || []).map(m => `<option value="${esc(typeof m === "string" ? m : m.id)}">`).join("")}</datalist></label><label>温度<input data-config="correction.temperature" type="number" min="0" max="1" step="0.1" value="${c.temperature ?? 0}"></label><label>最大输出 tokens<input data-config="correction.maxTokens" type="number" min="256" max="16000" value="${c.maxTokens ?? 4000}"></label><label>校订超时（秒）<input data-config="correction.timeout" type="number" min="2" max="60" value="${c.timeout ?? 10}"></label></div><details class="request-details"><summary>查看实际请求参数</summary><div class="actual-params">POST ${esc((p?.baseURL || "") + (p?.chatPath || "/chat/completions"))}\nmodel: ${esc(c.model)}\ntemperature: ${c.temperature ?? 0} · max_tokens: ${c.maxTokens ?? 4000}\nstream: false · ${noThinking ? "enable_thinking: false" : "thinking 参数不发送（平台默认）"}\ntimeout: ${Math.min(options.timeout,c.timeout ?? 10)}s · network: ${esc(effectiveNetwork(p))}</div></details><p class="hint">校订失败保留原文并显示状态；已发出的下一段识别不等待校订。原文可核对，音频时间不改变。</p></section>`;
+  return `<section class="panel settings-section"><div class="row spread"><h2>实时逐字稿校订</h2><span class="badge">${p?.hasKey ? "已配置密钥" : "未配置密钥"}</span></div><p class="hint">每句段自动修正错字、术语和断句；不概括、不省略。与内容分析可使用不同平台和模型。</p><label class="check"><input type="checkbox" data-config="live.correctTranscript" ${options.live.correctTranscript !== false ? "checked" : ""}>启用自动校订（默认开启）</label><div class="form-grid"><label>平台<select data-config="correction.providerId">${providersFor("correction").map(p => `<option value="${esc(p.id)}" ${p.id === c.providerId ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label><label>模型 ID<input data-config="correction.model" list="correctionModels" value="${esc(c.model)}"><button class="link-like" data-action="fetchModels" data-role="correction">获取平台模型列表</button><datalist id="correctionModels">${(p?.models || []).map(m => `<option value="${esc(typeof m === "string" ? m : m.id)}">`).join("")}</datalist></label><label>温度<input data-config="correction.temperature" type="number" min="0" max="1" step="0.1" value="${c.temperature ?? 0}"></label><label>最大输出 tokens<input data-config="correction.maxTokens" type="number" min="256" max="16000" value="${c.maxTokens ?? 4000}"></label><label>校订超时（秒）<input data-config="correction.timeout" type="number" min="2" max="60" value="${c.timeout ?? 10}"></label></div><details class="request-details"><summary>查看实际请求参数</summary><div class="actual-params">POST ${esc((p?.baseURL || "") + (p?.chatPath || "/chat/completions"))}\nmodel: ${esc(c.model)}\ntemperature: ${c.temperature ?? 0} · max_tokens: ${c.maxTokens ?? 4000}\nstream: false · ${noThinking ? "enable_thinking: false" : "thinking 参数不发送（平台默认）"}\ntimeout: ${Math.min(options.timeout,c.timeout ?? 10)}s · network: ${esc(effectiveNetwork(p))}</div></details><p class="hint">校订失败保留原文并显示状态；已发出的下一段识别不等待校订。原文可核对，音频时间不改变。</p></section>`;
 }
 function modelCard(role, label, desc) {
   const c = options[role];
   if (role === "correction") return correctionModelCard(c);
   const p = boot.providers.find((p) => p.id === c.providerId);
-  return `<section class="panel settings-section"><div class="row spread"><h2>${label}</h2><span class="badge">${p?.hasKey ? "已配置密钥" : "未配置密钥"}</span></div><p class="hint">${desc}</p><div class="form-grid"><label>平台<select data-config="${role}.providerId">${boot.providers.map((p) => `<option value="${esc(p.id)}" ${c.providerId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label><div class="model-field"><label>模型 ID<input data-config="${role}.model" list="${role}Models" value="${esc(c.model)}"></label><button class="link-like" data-action="fetchModels" data-role="${role}">获取平台模型列表</button><datalist id="${role}Models">${(
+  return `<section class="panel settings-section"><div class="row spread"><h2>${label}</h2><span class="badge">${p?.hasKey ? "已配置密钥" : "未配置密钥"}</span></div><p class="hint">${desc}</p><div class="form-grid"><label>平台<select data-config="${role}.providerId">${providersFor(role).map((p) => `<option value="${esc(p.id)}" ${c.providerId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label><div class="model-field"><label>模型 ID<input data-config="${role}.model" list="${role}Models" value="${esc(c.model)}"></label><button class="link-like" data-action="fetchModels" data-role="${role}">获取平台模型列表</button><datalist id="${role}Models">${(
     p?.models || []
   )
     .slice(0, 200)
@@ -1067,6 +1128,8 @@ async function refreshUsage() {
 function renderUsage() {
   const metrics=usageMetrics(current?usageData:null);
   document.querySelectorAll('[data-usage-metric]').forEach(el=>{el.textContent=metrics[Number(el.dataset.usageMetric)];});
+  // The compact strip appears once this record has made a model request; before that it is only dashes.
+  if($('recordUsageMetrics'))$('recordUsageMetrics').hidden=!(current&&usageData?.requests>0);
   const target = $("usageStrip");
   if (!target) return;
   if (!current) {
@@ -1090,7 +1153,7 @@ function renderUsage() {
     .reverse()
     .map(
       (r) =>
-        `<p>${esc(r.created)} · ${r.role === "correction" ? "实时校订 · " : ""}${esc(r.model)} · ${r.role === "asr" ? r.seconds.toFixed(1) + " 秒" : r.role === "search" ? "1 次搜索" : (r.usage.inputTokens ?? "未报告") + " 输入 / " + (r.usage.outputTokens ?? "未报告") + " 输出"} · ${r.cost === null ? "金额未知" : esc(r.price.currency) + " " + r.cost.toFixed(6)}</p>`,
+        `<p>${esc(String(r.created).slice(11,19)||r.created)} · ${ROLE_LABELS[r.role]||esc(r.role)} · ${esc(providerLabel(r.provider))}${r.requestedProvider?` · 回退：${esc(FALLBACK_REASONS[r.fallbackReason]||'所选平台不可用')}`:''} · ${esc(r.model)} · ${r.role === "asr" ? r.seconds.toFixed(1) + " 秒" : r.role === "search" ? "1 次搜索" : (r.usage.inputTokens ?? "未报告") + " 输入 / " + (r.usage.outputTokens ?? "未报告") + " 输出"} · ${r.cost === null ? "金额未知" : esc(r.price.currency) + " " + r.cost.toFixed(6)}</p>`,
     )
     .join("")}</details>`;
 }
@@ -1176,7 +1239,7 @@ function settingsPage() {
       )
       .join(
         "",
-      )}</select></div>${[["asrTimeoutSeconds","实时识别等待上限（秒）",45],["detectTimeoutSeconds","实时判题等待上限（秒）",20],["answerTimeoutSeconds","实时答题等待上限（秒）",45]].map(([k,label,fallback])=>`<div class="setting-row"><div>${label}<small>网络等待超时后保留原音并继续后续片段，避免分钟级积压。</small></div><input type="number" min="2" max="600" data-config="live.${k}" value="${options.live[k]??fallback}"></div>`).join("")}<div class="setting-row"><div>新题自动答题<small>关闭 Thinking，题目并发请求；新提问全屏提醒。需要深入分析时，在题目内追问并选择思考强度。</small></div><span class="badge">Thinking 关闭</span></div><div class="setting-row"><div>校订与判题合并<small>平台和模型相同且快速检测开启时，一次请求完成两步，使用校订温度和超时；不同模型仍分别调用。${options.correction?.providerId === options.text.providerId && options.correction?.model === options.text.model && options.live.correctTranscript !== false && options.live.fastDetection !== false ? "当前模型可合并。" : "当前模型分别调用。"}不跳过校订或放宽提问门限。</small></div><input type="checkbox" data-config="live.fastPipeline" ${options.live.fastPipeline !== false ? "checked" : ""}></div><div class="setting-row"><div>答案流式显示<small>收到正文就显示，不等待全文结束；不支持流式接口的平台可关闭。新题保持关闭 Thinking。</small></div><input type="checkbox" data-config="live.streamAnswers" ${options.live.streamAnswers !== false ? "checked" : ""}></div><div class="setting-row"><div>快速检测关闭思考<small>仅对已支持的中国站 SiliconFlow DeepSeek 生效，其他平台沿用模型设置；只影响提问/知识点初步检测；答题由独立的 Thinking 选项控制。</small></div><input type="checkbox" data-config="live.fastDetection" ${options.live.fastDetection ? "checked" : ""}></div><div class="setting-row"><div>按停顿发送<small>根据声音停顿分段，不是语义断句；完整原音继续保存。</small></div><input type="checkbox" data-config="live.sentenceMode" ${options.live.sentenceMode ? "checked" : ""}></div><div class="setting-row"><div>停顿时长（秒）</div><input data-config="live.pauseSeconds" type="number" min="0.3" max="3" step="0.1" value="${options.live.pauseSeconds}"></div><div class="setting-row"><div>关键词优先提醒<small>先做短段 ASR，命中关键词便提醒，不等待答案。会增加 ASR 请求次数，并仍有 ASR 网络延迟；这不是本地逐采样关键词检测。</small></div><input type="checkbox" data-config="live.keywordEnabled" ${options.live.keywordEnabled ? "checked" : ""}></div><div class="setting-row"><div>关键词快检间隔</div><select data-config="live.keywordProbeSeconds">${[2, 3, 4, 6].map((x) => `<option value="${x}" ${options.live.keywordProbeSeconds === x ? "selected" : ""}>${x} 秒</option>`).join("")}</select></div><label>提醒关键词（逗号分隔）<textarea id="keywordList" rows="2">${esc(options.live.keywords.join(", "))}</textarea></label><div class="setting-row"><div>最长分析间隔<small>按停顿或最长间隔合并文字做语义分析；关键词快检独立进行。检测最多 700、答题最多 1200 输出 tokens，均不超过模型设置。</small></div><select data-config="live.chunkSeconds">${[6, 12, 20, 30].map((x) => `<option value="${x}" ${options.live.chunkSeconds === x ? "selected" : ""}>${x} 秒</option>`).join("")}</select></div><div class="setting-row"><div>保存实时逐字文本<small>关闭时，只保存知识点与提问分析；不保存本段逐字文本。</small></div><input type="checkbox" data-config="live.retainTranscript" ${options.live.retainTranscript ? "checked" : ""}></div><div class="setting-row"><div>资料定位最低置信度<small>没有可靠匹配时不更新页码；资料在其他 App 阅读。</small></div><input data-config="live.pageConfidence" type="number" min="0.5" max="1" step="0.05" value="${options.live.pageConfidence}" style="width:80px"></div><div class="setting-row"><div>检测到提问后联网搜索<small>将提问发往 Brave Search，再让分析模型结合来源回答。${boot.searchReady ? "搜索密钥已配置。" : "尚未配置搜索密钥。"}</small></div><input data-config="live.webSearch" type="checkbox" ${options.live.webSearch ? "checked" : ""} ${boot.searchReady ? "" : "disabled"}></div><label style="margin-top:18px">Brave Search API Key<input id="searchKey" type="password" autocomplete="new-password" placeholder="只保存在本机，不回传已有密钥"></label><button data-action="saveSearch" style="margin-top:12px">保存搜索密钥</button><p class="hint">后台、锁屏或接听电话可能被浏览器暂停。当前版本不能承诺手机后台连续录制。</p></section>`;
+      )}</select></div>${[["asrTimeoutSeconds","实时识别等待上限（秒）",45],["detectTimeoutSeconds","实时判题等待上限（秒）",20],["answerTimeoutSeconds","实时答题等待上限（秒）",45]].map(([k,label,fallback])=>`<div class="setting-row"><div>${label}<small>网络等待超时后保留原音并继续后续片段，避免分钟级积压。</small></div><input type="number" min="2" max="600" data-config="live.${k}" value="${options.live[k]??fallback}"></div>`).join("")}<div class="setting-row"><div>新题自动答题<small>关闭 Thinking，题目并发请求；新提问全屏提醒。需要深入分析时，在题目内追问并选择思考强度。</small></div><span class="badge">Thinking 关闭</span></div><div class="setting-row"><div>校订与判题合并<small>平台和模型相同且快速检测开启时，一次请求完成两步，使用校订温度和超时；不同模型仍分别调用。${options.correction?.providerId === options.text.providerId && options.correction?.model === options.text.model && options.live.correctTranscript !== false && options.live.fastDetection !== false ? "当前模型可合并。" : "当前模型分别调用。"}不跳过校订或放宽提问门限。</small></div><input type="checkbox" data-config="live.fastPipeline" ${options.live.fastPipeline !== false ? "checked" : ""}></div><div class="setting-row"><div>结束后用完整原音复核<small>默认关闭。开启后，点“结束”保存完之后再把整段原音重新识别、校订一遍：多一遍 ASR 和校订费用，用 Windows 时约需录音时长的 0.6 倍。随时也可以在底部点“重新识别（ASR）”手动做。</small></div><input type="checkbox" data-config="live.finalAudioReview" ${options.live.finalAudioReview === true ? "checked" : ""}></div><div class="setting-row"><div>答案流式显示<small>收到正文就显示，不等待全文结束；不支持流式接口的平台可关闭。新题保持关闭 Thinking。</small></div><input type="checkbox" data-config="live.streamAnswers" ${options.live.streamAnswers !== false ? "checked" : ""}></div><div class="setting-row"><div>快速检测关闭思考<small>仅对已支持的中国站 SiliconFlow DeepSeek 生效，其他平台沿用模型设置；只影响提问/知识点初步检测；答题由独立的 Thinking 选项控制。</small></div><input type="checkbox" data-config="live.fastDetection" ${options.live.fastDetection ? "checked" : ""}></div><div class="setting-row"><div>按停顿发送<small>根据声音停顿分段，不是语义断句；完整原音继续保存。</small></div><input type="checkbox" data-config="live.sentenceMode" ${options.live.sentenceMode ? "checked" : ""}></div><div class="setting-row"><div>停顿时长（秒）</div><input data-config="live.pauseSeconds" type="number" min="0.3" max="3" step="0.1" value="${options.live.pauseSeconds}"></div><div class="setting-row"><div>关键词优先提醒<small>先做短段 ASR，命中关键词便提醒，不等待答案。会增加 ASR 请求次数，并仍有 ASR 网络延迟；这不是本地逐采样关键词检测。</small></div><input type="checkbox" data-config="live.keywordEnabled" ${options.live.keywordEnabled ? "checked" : ""}></div><div class="setting-row"><div>关键词快检间隔</div><select data-config="live.keywordProbeSeconds">${[2, 3, 4, 6].map((x) => `<option value="${x}" ${options.live.keywordProbeSeconds === x ? "selected" : ""}>${x} 秒</option>`).join("")}</select></div><label>提醒关键词（逗号分隔）<textarea id="keywordList" rows="2">${esc(options.live.keywords.join(", "))}</textarea></label><div class="setting-row"><div>最长分析间隔<small>按停顿或最长间隔合并文字做语义分析；关键词快检独立进行。检测最多 700、答题最多 1200 输出 tokens，均不超过模型设置。</small></div><select data-config="live.chunkSeconds">${[6, 12, 20, 30].map((x) => `<option value="${x}" ${options.live.chunkSeconds === x ? "selected" : ""}>${x} 秒</option>`).join("")}</select></div><div class="setting-row"><div>保存实时逐字文本<small>关闭时，只保存知识点与提问分析；不保存本段逐字文本。</small></div><input type="checkbox" data-config="live.retainTranscript" ${options.live.retainTranscript ? "checked" : ""}></div><div class="setting-row"><div>资料定位最低置信度<small>没有可靠匹配时不更新页码；资料在其他 App 阅读。</small></div><input data-config="live.pageConfidence" type="number" min="0.5" max="1" step="0.05" value="${options.live.pageConfidence}" style="width:80px"></div><div class="setting-row"><div>检测到提问后联网搜索<small>将提问发往 Brave Search，再让分析模型结合来源回答。${boot.searchReady ? "搜索密钥已配置。" : "尚未配置搜索密钥。"}</small></div><input data-config="live.webSearch" type="checkbox" ${options.live.webSearch ? "checked" : ""} ${boot.searchReady ? "" : "disabled"}></div><label style="margin-top:18px">Brave Search API Key<input id="searchKey" type="password" autocomplete="new-password" placeholder="只保存在本机，不回传已有密钥"></label><button data-action="saveSearch" style="margin-top:12px">保存搜索密钥</button><p class="hint">后台、锁屏或接听电话可能被浏览器暂停。当前版本不能承诺手机后台连续录制。</p></section>`;
   if (settingsTab === "billing") content = pricingSettings();
   if (settingsTab === "storage")
     content = `<section class="panel settings-section"><h2>录音与版本</h2><p class="hint">原音、音频片段、资料与文字版本均在本机服务的数据目录中。模型请求只在你确认后发往所选平台。</p><div class="setting-row"><div>原始录音<small>结束后保留，可换模型、改提示词重新识别与整理。</small></div><span class="badge">默认保留</span></div><div class="setting-row"><div>分段保存与重传<small>未上传的片段缓存在当前浏览器 IndexedDB。</small></div><button data-action="retry">重传待保存片段</button></div><div class="setting-row"><div>文字版本<small>重新生成与人工编辑均另存版本，不覆盖原稿。</small></div><span class="badge">保留历史</span></div><div class="setting-row"><div>手机访问<small>当前只监听本机；跨设备使用还需 HTTPS、登录与私有存储。</small></div><span class="badge">尚未部署</span></div>${current ? `<a href="/api/sessions/${current}/export" target="_blank" style="display:inline-block;margin-top:20px">导出当前记录全部数据 JSON</a>` : ""}</section>`;
@@ -1203,7 +1266,7 @@ function themeGallery() {
       "dark",
       "night",
       "深色专注 · 深色",
-      "深色表面与高对比文字，用于夜间与暗光环境。",
+      "纯黑背景与高对比文字，夜间不刺眼，OLED 手机更省电。",
     ],
   ]
     .map(
@@ -1263,12 +1326,10 @@ function render() {
   if ($("speakerNotes"))
     $("speakerNotes").oninput = (e) => (speakers = e.target.value);
   if ($("transcriptSearch"))
+    // Filter the paragraphs in place: a full render would close the "⋯" panel holding this box.
     $("transcriptSearch").oninput = (e) => {
-      const cursor = e.target.selectionStart;
       searchText = e.target.value;
-      render();
-      $("transcriptSearch").focus();
-      $("transcriptSearch").setSelectionRange(cursor, cursor);
+      refreshTranscriptParagraphs();
     };
   if ($("documentSelect"))
     $("documentSelect").onchange = (e) => guard(() => openDoc(e.target.value));
@@ -2672,13 +2733,13 @@ async function dispatchLive(item, config) {
 }
 
 function updateControls() {
-  if($('retryAnalysis'))$('retryAnalysis').hidden=!current;
+  if($('retryAnalysis'))$('retryAnalysis').hidden=!hasFailedAnalysis();
   if($('resumeRecording'))$('resumeRecording').hidden=recording||starting||finishing||!window.LectureMobile||!(interruptedRecordingId||detailData?.hasAudio&&['recording','interrupted'].includes(detailData.status));
   if($('resumeRecording'))$('resumeRecording').textContent=detailData?.hasAudio&&['recording','interrupted'].includes(detailData.status)?'继续此录音':'恢复上次录音';
   if($('returnRecording'))$('returnRecording').hidden=!(recording||finishing)||!recordingSessionId||current===recordingSessionId&&view===recordingPage;
   if($('returnRecording'))$('returnRecording').textContent=recording?'录音中 · 返回当前录音':'处理中 · 返回当前记录';
   if($('retranscribeAudio')){
-    $('retranscribeAudio').hidden=!current||recording;
+    $('retranscribeAudio').hidden=!current||recording||!detailData?.hasAudio;
     $('retranscribeAudio').disabled=finishing||busy>0||!detailData?.hasAudio;
     $('retranscribeAudio').title=detailData?.hasAudio?'从完整原音重新识别，先预览阈值与费用，确认后才调用模型':'原音不在此设备，请回到录音时的浏览器或导入录音';
   }
@@ -2756,7 +2817,7 @@ async function beginRecording(resume=false) {
   if (
     live &&
     !confirmCall(
-      `开始本次${originView !== "assist" ? "实时逐字转录" : "实时听课分析"}。本机持续检测人声，确认讲话结束后发送整段，不按固定秒数截断。${options.live.correctTranscript !== false ? `句段自动调用 ${options.correction?.model || options.text.model} 校订（增加文本用量）。` : "自动校订已关闭。"}实时识别会携带此前连续原音上下文，成功请求音频量限制在已处理原音的 3 倍以内（额外重试另计）。低于收音阈值时不发送模型，原音与计时继续。${originView !== "assist" || options.live.retainTranscript ? "逐字稿会保存。" : "当前不保存逐字文本，只在本次显示；原音仍保留。"}${options.live.finalAudioReview!==false&&(originView!=='assist'||options.live.retainTranscript)?'结束后自动用连续完整原音再识别、校订一次，增加一遍 ASR 和校订费用；模型暂停的片段不会补发，原实时稿保留。':''}${originView === "assist" && options.live.webSearch ? "检测到提问后会将问题发送 Brave 并再次调用模型，可能增加费用。" : ""}`,
+      `开始本次${originView !== "assist" ? "实时逐字转录" : "实时听课分析"}。本机持续检测人声，确认讲话结束后发送整段，不按固定秒数截断。${options.live.correctTranscript !== false ? `句段自动调用 ${options.correction?.model || options.text.model} 校订（增加文本用量）。` : "自动校订已关闭。"}${boot.providers?.find(p=>p.id===options.asr.providerId)?.privateRelay?'识别在 Windows 本地 GPU 上逐段进行（不重复送上下文）；Windows 不可用时自动改用备用在线平台并按量计费。':'实时识别会携带此前连续原音上下文，成功请求音频量限制在已处理原音的 3 倍以内（额外重试另计）。'}低于收音阈值时不发送模型，原音与计时继续。${originView !== "assist" || options.live.retainTranscript ? "逐字稿会保存。" : "当前不保存逐字文本，只在本次显示；原音仍保留。"}${options.live.finalAudioReview===true&&(originView!=='assist'||options.live.retainTranscript)?'结束后自动用连续完整原音再识别、校订一次，增加一遍 ASR 和校订费用；模型暂停的片段不会补发，原实时稿保留。':''}${originView === "assist" && options.live.webSearch ? "检测到提问后会将问题发送 Brave 并再次调用模型，可能增加费用。" : ""}`,
     )
   )
     return;
@@ -2859,6 +2920,8 @@ async function beginRecording(resume=false) {
     if(frameDb>=boundary&&frameDb>-75)endpointVoicedSeconds+=b.length/ctx.sampleRate;
     quietSeconds =
       frameDb < boundary ? quietSeconds + b.length / ctx.sampleRate : 0;
+    // The lamp follows the audio itself, not the 2-second housekeeping timer.
+    if (performance.now() - lastLampPaint > 250) { lastLampPaint = performance.now(); updateCaptureStatus(); }
     if (performance.now() - lastMeter > 100) {
       let energy = 0;
       for (const x of b) energy += x * x;
@@ -2958,9 +3021,13 @@ async function finishRecording() {
   interruptedRecordingId=null;
   $("micStatus").textContent="原录音已安全保存 · 文字处理中";
   if (wasLive) {
-    tell("原录音已安全保存，等待剩余文字结果…");
+    tell("原录音已安全保存，等待最后一段识别…");
     await liveQueue;
-    await Promise.allSettled([...analysisTasks]);
+    // Corrections and answers still running finish in the background and save themselves;
+    // saving the recording does not wait on them for more than a few seconds.
+    const outstanding=[...analysisTasks];
+    if(outstanding.length)await Promise.race([Promise.allSettled(outstanding),new Promise(r=>setTimeout(r,8000))]);
+    if([...analysisTasks].length)tell(`录音已保存；还有 ${[...analysisTasks].length} 段校订/判题在后台完成，结果会自动写入。`);
     if (liveConfig.realtimeKind === "assist" && !modelPaused) {
       const final = await jobs(
         `/api/sessions/${sid}/live-finalize`,
@@ -2981,7 +3048,8 @@ async function finishRecording() {
       liveConfig.live.retainTranscript)
   )
     await api(`/api/sessions/${sid}/transcript-snapshot`, {});
-  if(wasLive&&liveConfig.live.retainTranscript!==false&&liveConfig.live.finalAudioReview!==false){
+  // Whole-recording re-recognition is opt-in (settings) or on demand via 重新识别（ASR）; it no longer delays saving.
+  if(wasLive&&liveConfig.live.retainTranscript!==false&&liveConfig.live.finalAudioReview===true){
     try{
       const reviewed=await jobs('/api/sessions/'+sid+'/review-live-audio',{config:liveConfig,consent:true},j=>tell(j.message||'正在用完整原音复核逐字稿…'));
       if(!reviewed.skipped)audioReviewNotice='完整原音复核已保存；时间标记按整块音频显示。'+(reviewed.failedCorrections?'部分文字校订失败，已保留 ASR 复核原文。':'');
@@ -3008,8 +3076,8 @@ async function retryFailedAnalysis(){
     if(![...tasks.values()].some(t=>t.path===path&&t.body.seq===seq))tasks.set(failedTaskKey(path,body),{path,body});
   }
   if(!tasks.size){
-    if(detailData?.hasAudio&&!recording&&!finishing&&!busy){tell('没有待重试的分析，已打开完整录音重新识别；确认后才发送模型。');return runTranscribe();}
-    return tell(recording?'当前没有失败任务；结束录音后，可点底部“重新识别录音”。':detailData?.hasAudio?'请等待当前任务结束，再点底部“重新识别录音”。':'原音不在此设备，请回到录音时的浏览器或导入录音。');
+    updateControls();
+    return tell('没有失败的片段需要重新分析。要从原音重新做语音识别，请点“重新识别（ASR）”。');
   }
   if(!confirmCall('重试 '+tasks.size+' 个失败任务。复用已有转录，缺少转录时才重新 ASR；分析与整理会产生模型费用。'))return;
   retryAnalysisRunning=true;
@@ -3539,6 +3607,7 @@ document.addEventListener("visibilitychange", () => {
     tell("页面已进入后台，系统可能暂停麦克风。请回到前台检查收音。", true);
 });
 async function init() {
+  refreshStoredFailures();
   db = await new Promise((res, rej) => {
     const r = indexedDB.open("lecture-demo", 1);
     r.onupgradeneeded = () =>
@@ -3563,12 +3632,14 @@ async function init() {
   options.correction = { ...boot.config.correction, ...(options.correction || options.text), ...(options.correction || {}) };
   options.prices ||= {};
   options.silence = { ...boot.config.silence, ...options.silence };
-  if(options.silence.gatePolicyVersion!==2){
+  if((options.silence.gatePolicyVersion||0)<2){
     if(options.silence.minSilence==null||options.silence.minSilence===1.5)options.silence.minSilence=3;
     if(options.silence.preRoll==null||options.silence.preRoll===.35)options.silence.preRoll=1;
   }
+  // 2026-11-16: pause uploads only after 3 s of silence and resend the 3 s before speech resumes.
+  if((options.silence.gatePolicyVersion||0)<3&&(options.silence.preRoll==null||options.silence.preRoll===1))options.silence.preRoll=3;
   options.silence.holdBeforeSkip=true;
-  options.silence.gatePolicyVersion=2;
+  options.silence.gatePolicyVersion=3;
   options.live = {
     correctTranscript: true,
     fastPipeline: true,
@@ -3651,10 +3722,14 @@ async function init() {
   drawWave();
   await countPending();
 }
+// While the user is choosing in a picker inside the details panel, background text updates wait:
+// iOS closes an open <select> picker when the content around it changes height.
+function editingControlsPanel(){const a=document.activeElement;return !!a?.closest?.('.session-details,.quick-models,.lesson-planner,.settings-layout')&&/^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName);}
 setInterval(() => {
   if (view === "assist") updateTopicDisplay();
   if(liveOrganization && recording && !finishing && !organizingRecord)guard(organizeLiveRecord);
   updateCaptureStatus();
+  if (editingControlsPanel()) return;
   updatePipelineStatus();
   if (current && (recording || busy || !usageData)) guard(refreshUsage);
 }, 2000);
